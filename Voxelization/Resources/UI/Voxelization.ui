@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>790</width>
+    <width>538</width>
     <height>511</height>
    </rect>
   </property>
@@ -24,25 +24,10 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
-       <widget class="ctkSliderWidget" name="pitchWidget">
-        <property name="toolTip">
-         <string>Set the pitch of the voxels.</string>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
-        <property name="minimum">
-         <double>0.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>500.000000000000000</double>
-        </property>
-        <property name="value">
-         <double>10.000000000000000</double>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>imageThreshold</string>
+      <item row="1" column="0">
+       <widget class="QLabel" name="labelPitch">
+        <property name="text">
+         <string>Pitch:</string>
         </property>
        </widget>
       </item>
@@ -73,20 +58,22 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="labelPitch">
-        <property name="text">
-         <string>Pitch:</string>
+      <item row="1" column="1">
+       <widget class="ctkSliderWidget" name="pitchWidget">
+        <property name="toolTip">
+         <string>Set the pitch of the voxels.</string>
         </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QPushButton" name="voxelButton">
-       <property name="toolTip">
-         <string>Run the voxelization.</string>
+        <property name="singleStep">
+         <double>0.050000000000000</double>
         </property>
-        <property name="text">
-         <string>Apply Voxelization</string>
+        <property name="minimum">
+         <double>0.010000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>5.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.500000000000000</double>
         </property>
        </widget>
       </item>
@@ -99,13 +86,6 @@
       <string>Outputs</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_3">
-      <item row="0" column="0">
-       <widget class="QLabel" name="labelOutputModel">
-        <property name="text">
-         <string>Output model:</string>
-        </property>
-       </widget>
-      </item>
       <item row="0" column="1">
        <widget class="qMRMLNodeComboBox" name="outputSelectorModel">
         <property name="toolTip">
@@ -136,21 +116,22 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
-       <widget class="ctkDirectoryButton" name="DirectoryButton"/>
-      </item>
-      <item row="1" column="1">
-       <widget class="QPushButton" name="exportToFileButton">
-        <property name="enabled">
-         <bool>true</bool>
-        </property>
-        <property name="toolTip">
-         <string>Export the output model as .vtk .stl .msh</string>
-        </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="labelOutputModel">
         <property name="text">
-         <string>Export files to folder</string>
+         <string>Output model:</string>
         </property>
        </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Export folder:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="ctkDirectoryButton" name="DirectoryButton"/>
       </item>
      </layout>
     </widget>
@@ -161,69 +142,106 @@
       <bool>true</bool>
      </property>
      <property name="text">
-      <string>Advanced</string>
+      <string>Quantitative Metrics</string>
      </property>
      <property name="collapsed">
       <bool>false</bool>
      </property>
-     <layout class="QGridLayout" name="gridLayout">
-      <item row="0" column="3">
-       <widget class="QPushButton" name="scaleButton">
-        <property name="enabled">
-         <bool>true</bool>
-        </property>
-        <property name="toolTip">
-         <string>Perform the model scaling.</string>
-        </property>
-        <property name="text">
-         <string>Apply Scaling</string>
-        </property>
-       </widget>
-      </item>
+     <layout class="QFormLayout" name="formLayout">
       <item row="0" column="0">
-       <widget class="QLabel" name="labelScale">
-        <property name="text">
-         <string>Scale:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
        <widget class="QLabel" name="voxelCountLabel">
         <property name="text">
-         <string>Voxel count:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QLineEdit" name="lineEdit">
-        <property name="readOnly">
-         <bool>true</bool>
+         <string>Original voxel count:</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
-       <widget class="ctkSliderWidget" name="scaleWidget">
-        <property name="toolTip">
-         <string>Set the value used to scale the input model in size.</string>
+       <widget class="QLabel" name="voxelCountOriginal">
+        <property name="text">
+         <string>N/A</string>
         </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="diceLabel">
+        <property name="text">
+         <string>Dice:</string>
         </property>
-        <property name="minimum">
-         <double>0.000000000000000</double>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="diceScore">
+        <property name="text">
+         <string>N/A</string>
         </property>
-        <property name="maximum">
-         <double>500.000000000000000</double>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="iouLabel">
+        <property name="text">
+         <string>IoU:</string>
         </property>
-        <property name="value">
-         <double>10.000000000000000</double>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLabel" name="iouScore">
+        <property name="text">
+         <string>N/A</string>
         </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>imageThreshold</string>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="deltaVLabel">
+        <property name="text">
+         <string>delta_V:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QLabel" name="deltaV">
+        <property name="text">
+         <string>N/A</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_2">
+        <property name="text">
+         <string>Model voxel count:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="voxelCountNew">
+        <property name="text">
+         <string>N/A</string>
         </property>
        </widget>
       </item>
      </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="voxelButton">
+     <property name="toolTip">
+      <string>Run the voxelization.</string>
+     </property>
+     <property name="text">
+      <string>Apply</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="exportToFileButton">
+     <property name="enabled">
+      <bool>true</bool>
+     </property>
+     <property name="toolTip">
+      <string>Export the output model as .vtk .stl .msh</string>
+     </property>
+     <property name="text">
+      <string>Export files to folder</string>
+     </property>
     </widget>
    </item>
    <item>
