@@ -4,7 +4,6 @@ from typing import Annotated, Optional
 
 import vtk
 import vtk.util.numpy_support as vtk_np
-import numpy as np
 
 import slicer
 from slicer.i18n import tr as _
@@ -18,7 +17,7 @@ from slicer.parameterNodeWrapper import (
 
 from slicer import vtkMRMLModelNode
 
-
+from numpy import ndarray
 #
 # Voxelization
 #
@@ -196,6 +195,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
                 self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
         """
+        print("Setting parameter node")
         self._parameterNode = inputParameterNode
         if self._parameterNode:
             # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
@@ -301,12 +301,13 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
     def getParameterNode(self):
         return VoxelizationParameterNode(super().getParameterNode())
 
-    def computeVoxelMetrics(self, maskA: np.ndarray, maskB: np.ndarray) -> dict:
+    def computeVoxelMetrics(self, maskA: ndarray, maskB: ndarray) -> dict:
+        from numpy import logical_and, logical_or
         if maskA.shape != maskB.shape:
             raise ValueError("Voxel grids must have the same shape")
 
-        intersection = np.logical_and(maskA, maskB).sum()
-        union = np.logical_or(maskA, maskB).sum()
+        intersection = logical_and(maskA, maskB).sum()
+        union = logical_or(maskA, maskB).sum()
 
         volA = maskA.sum()
         volB = maskB.sum()
@@ -343,7 +344,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         referenceOrigin,
         referenceSpacing,
         referenceExtent,
-    ) -> np.ndarray:
+    ) -> ndarray:
         """
         Rasterize a model into a voxel grid defined by origin, spacing and extent.
         """
@@ -388,6 +389,9 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         pitch: float,
         ui=None,
     ) -> dict:
+        import trimesh
+        from numpy import full, int64, hstack
+        
         """
         Voxelize mesh, rasterize original segmentation,
         compute Dice, IoU and volume metrics.
@@ -453,9 +457,9 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
         faces_out = surface_mesh.faces
         num_faces = faces_out.shape[0]
-        cells_array = np.hstack(
-            [np.full((num_faces, 1), 3), faces_out]
-        ).astype(np.int64)
+        cells_array = hstack(
+            [full((num_faces, 1), 3), faces_out]
+        ).astype(int64)
 
         cells_vtk = vtk_np.numpy_to_vtkIdTypeArray(cells_array, deep=True)
         connectivity = vtk.vtkCellArray()
@@ -483,6 +487,8 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
     def voxelizeModelToModel(self, inputModel: vtkMRMLModelNode, outputModel: vtkMRMLModelNode, 
                                 pitch: float, ui=None,) -> None:
+            import trimesh
+            from numpy import sum, hstack, full, int64
             
             ###Voxelizes the entire model using a given pitch.
             ###:param pitch: float
@@ -508,7 +514,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
             voxelized = mesh.voxelized(pitch=pitch).fill()
 
             # The 'matrix' is a boolean array where True represents a filled voxel
-            totalVoxelCount = np.sum(voxelized.matrix)
+            totalVoxelCount = sum(voxelized.matrix)
 
             if ui:
                 ui.voxelCount.setText(f"{totalVoxelCount:,}") 
@@ -535,7 +541,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
             # Set cells as triangles for the cube faces
             num_faces = f_out.shape[0]
             # VTK expects [3, id1, id2, id3, 3, id4...]
-            cells_array = np.hstack([np.full((num_faces, 1), 3), f_out]).astype(np.int64)
+            cells_array = hstack([full((num_faces, 1), 3), f_out]).astype(int64)
             cells_vtk = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array, deep=True)
             
             connectivity = vtk.vtkCellArray()
@@ -615,6 +621,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         writer.Write()
 
     def exportModelMSH(self, modelNode, filePath):
+        import meshio
         """Writes the polydata to a Gmsh (.msh) file using meshio."""
         # Ensure the mesh is purely triangles
         triangulate = vtk.vtkTriangleFilter()
