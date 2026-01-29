@@ -388,26 +388,31 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         outputVoxelModel: vtkMRMLModelNode,
         pitch: float,
         ui=None,
-    ) -> dict:
+    ) -> dict:    
         import trimesh
-        from numpy import full, int64, hstack
+        from numpy import sum, hstack, full, int64
         
-        """
-        Voxelize mesh, rasterize original segmentation,
-        compute Dice, IoU and volume metrics.
-        """
+        ###Voxelizes the entire model using a given pitch.
+        ###:param pitch: float
+        
 
-        # ---------------------------
-        # 1. Trimesh voxelization
-        # ---------------------------
+        if not inputModel or not outputVoxelModel:
+            raise ValueError("Invalid input or output model")
+        
+        # Convert Slicer MRML model to Trimesh
         inputModel.HardenTransform()
         polyData = inputModel.GetPolyData()
-
-        points = vtk_np.vtk_to_numpy(polyData.GetPoints().GetData())
-        cells = vtk_np.vtk_to_numpy(polyData.GetPolys().GetData())
+        
+        # Extract vertices and faces from VTK PolyData
+        points = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
+        cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
+        
+        # VTK polys are stored as [n, id1, id2, id3, n, id4...] triangles
         faces = cells.reshape(-1, 4)[:, 1:]
 
         mesh = trimesh.Trimesh(vertices=points, faces=faces)
+
+        # Voxelize and fill: create the occupancy grid and fill the interior
         voxelized = mesh.voxelized(pitch=pitch).fill()
         voxelMask = voxelized.matrix.astype(bool)
 
