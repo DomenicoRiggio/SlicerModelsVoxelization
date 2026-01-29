@@ -251,7 +251,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             with slicer.util.tryWithErrorDisplay(_("Operation failed."), waitCursor=True):
                 #self.logic.voxelizeModelToModel(inputModel, outputModel, pitch, self.ui)
-                self.logic.voxelizeModelAndCompare(inputModel, outputModel, pitch, self.ui)
+                self.logic.voxelizeModelToModel(inputModel, outputModel, pitch, self.ui)
                 
     def onExportButton(self) -> None:
         """Export output model to file"""
@@ -522,7 +522,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
             totalVoxelCount = sum(voxelized.matrix)
 
             if ui:
-                ui.voxelCount.setText(f"{totalVoxelCount:,}") 
+                ui.voxelCountNew.setText(f"{totalVoxelCount}")
             
                 # Ensure the UI refreshes immediately
                 slicer.app.processEvents()
