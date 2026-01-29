@@ -15,7 +15,7 @@ from slicer.parameterNodeWrapper import (
     WithinRange,
 )
 
-from slicer import vtkMRMLModelNode
+from slicer import vtkMRMLModelNode, vtkMRMLScalarVolumeNode
 
 from numpy import ndarray
 #
@@ -59,11 +59,12 @@ class VoxelizationParameterNode:
     """
     The parameters needed by module.
 
+    inputVolume - The VTK reference scalar volume
     inputModel  - The VTK model to be voxelized.
     pitch       - The value setting the side length for the voxels.
-    inputModel  - The VTK model to be exported.
+    outputModel  - The VTK model to be exported.
     """
-
+    inputVolume: vtkMRMLScalarVolumeNode
     inputModel: vtkMRMLModelNode
     pitch: float
     outputModel: vtkMRMLModelNode
@@ -184,18 +185,22 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             firstModelNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLModelNode")
             if firstModelNode:
                 self._parameterNode.inputModel = firstModelNode
-
+ 
+        if self._parameterNode and not self._parameterNode.inputVolume:
+            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+            if firstVolumeNode:
+                self._parameterNode.inputVolume = firstVolumeNode
+                
     def setParameterNode(self, inputParameterNode: Optional[VoxelizationParameterNode]) -> None:
         """
         Set and observe parameter node.
         Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
         """
 
-        """ if self._parameterNode:
+        if self._parameterNode:
                 self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
                 self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        """
-        print("Setting parameter node")
+        
         self._parameterNode = inputParameterNode
         if self._parameterNode:
             # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
@@ -205,7 +210,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._checkCanApply()
 
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputModel and self._parameterNode.outputModel:
+        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.inputModel and self._parameterNode.outputModel:
             self.ui.exportToFileButton.enabled = True
             self.ui.exportToFileButton.toolTip = _("Export model")
 
@@ -239,19 +244,20 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Voxelize the input model"""
 
         with slicer.util.tryWithErrorDisplay(_("Voxelization failed."), waitCursor=True):
-            inputModel = self.ui.inputSelector.currentNode()
+            inputVolume = self.ui.inputVolumeSelector.currentNode()
+            inputModel = self.ui.inputModelSelector.currentNode()
             outputModel = self.ui.outputSelectorModel.currentNode()
             
             # Map the slider value to the pitch
             pitch = float(self.ui.pitchWidget.value)
 
             # If your output selector is empty, we can overwrite the input
-            if not outputModel:
-                outputModel = inputModel
+            #if not outputModel:
+            #    outputModel = inputModel
 
             with slicer.util.tryWithErrorDisplay(_("Operation failed."), waitCursor=True):
                 #self.logic.voxelizeModelToModel(inputModel, outputModel, pitch, self.ui)
-                self.logic.voxelizeModelToModel(inputModel, outputModel, pitch, self.ui)
+                self.logic.voxelizeModelToModelNew(inputVolume, inputModel, outputModel, pitch, self.ui)
                 
     def onExportButton(self) -> None:
         """Export output model to file"""
@@ -301,94 +307,8 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
     def getParameterNode(self):
         return VoxelizationParameterNode(super().getParameterNode())
 
-    def computeVoxelMetrics(self, maskA: ndarray, maskB: ndarray) -> dict:
-        from numpy import logical_and, logical_or
-        if maskA.shape != maskB.shape:
-            raise ValueError("Voxel grids must have the same shape")
-
-        intersection = logical_and(maskA, maskB).sum()
-        union = logical_or(maskA, maskB).sum()
-
-        volA = maskA.sum()
-        volB = maskB.sum()
-
-        dice = 2.0 * intersection / (volA + volB) if (volA + volB) > 0 else 1.0
-        iou = intersection / union if union > 0 else 1.0
-
-        return {
-            "dice": float(dice),
-            "iou": float(iou),
-            "voxels_A": int(volA),
-            "voxels_B": int(volB),
-            "intersection": int(intersection),
-        }
-
-
-    def computeVolumeMetrics(self, voxelsA: int, voxelsB: int, pitch: float) -> dict:
-        voxelVolume = pitch ** 3
-        volA = voxelsA * voxelVolume
-        volB = voxelsB * voxelVolume
-
-        relDiff = (volB - volA) / volA * 100 if volA > 0 else 0.0
-
-        return {
-            "volume_A_mm3": float(volA),
-            "volume_B_mm3": float(volB),
-            "relative_difference_percent": float(relDiff),
-        }
-
-
-    def rasterizeModelToVoxelGrid(
-        self,
-        modelNode,
-        referenceOrigin,
-        referenceSpacing,
-        referenceExtent,
-    ) -> ndarray:
-        """
-        Rasterize a model into a voxel grid defined by origin, spacing and extent.
-        """
-        modelNode.HardenTransform()
-        polyData = modelNode.GetPolyData()
-
-        image = vtk.vtkImageData()
-        image.SetOrigin(referenceOrigin)
-        image.SetSpacing(referenceSpacing)
-        image.SetExtent(referenceExtent)
-        image.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
-        image.GetPointData().GetScalars().Fill(0)
-
-        polyToStencil = vtk.vtkPolyDataToImageStencil()
-        polyToStencil.SetInputData(polyData)
-        polyToStencil.SetOutputOrigin(referenceOrigin)
-        polyToStencil.SetOutputSpacing(referenceSpacing)
-        polyToStencil.SetOutputWholeExtent(referenceExtent)
-        polyToStencil.Update()
-
-        stencil = vtk.vtkImageStencil()
-        stencil.SetInputData(image)
-        stencil.SetStencilConnection(polyToStencil.GetOutputPort())
-        stencil.ReverseStencilOff()
-        stencil.SetBackgroundValue(0)
-        stencil.Update()
-
-        img = stencil.GetOutput()
-        arr = vtk_np.vtk_to_numpy(img.GetPointData().GetScalars())
-        arr = arr.reshape(
-            img.GetDimensions()[::-1]
-        )  # z, y, x
-
-        return arr.astype(bool)
-
-
-    def voxelizeModelAndCompare(
-        self,
-        inputModel: vtkMRMLModelNode,
-        originalSegmentationModel: vtkMRMLModelNode,
-        outputVoxelModel: vtkMRMLModelNode,
-        pitch: float,
-        ui=None,
-    ) -> dict:    
+    def voxelizeModelToModel(self, inputModel: vtkMRMLModelNode, outputModel: vtkMRMLModelNode, 
+                                pitch: float, ui=None,) -> None:
         import trimesh
         from numpy import sum, hstack, full, int64
         
@@ -396,7 +316,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         ###:param pitch: float
         
 
-        if not inputModel or not outputVoxelModel:
+        if not inputModel or not outputModel:
             raise ValueError("Invalid input or output model")
         
         # Convert Slicer MRML model to Trimesh
@@ -414,161 +334,209 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
         # Voxelize and fill: create the occupancy grid and fill the interior
         voxelized = mesh.voxelized(pitch=pitch).fill()
-        voxelMask = voxelized.matrix.astype(bool)
 
-        # ---------------------------
-        # 2. Reference grid
-        # ---------------------------
-        origin = voxelized.origin
-        spacing = (pitch, pitch, pitch)
-        dims = voxelMask.shape
-        extent = (0, dims[2] - 1, 0, dims[1] - 1, 0, dims[0] - 1)
+        # The 'matrix' is a boolean array where True represents a filled voxel
+        totalVoxelCount = sum(voxelized.matrix)
 
-        # ---------------------------
-        # 3. Rasterize original segmentation
-        # ---------------------------
-        originalMask = self.rasterizeModelToVoxelGrid(
-            originalSegmentationModel,
-            referenceOrigin=origin,
-            referenceSpacing=spacing,
-            referenceExtent=extent,
-        )
+        if ui:
+            ui.voxelCountNew.setText(f"{totalVoxelCount}")
+        
+            # Ensure the UI refreshes immediately
+            slicer.app.processEvents()
+        
+        # Convert back to geometry: create a single mesh made of cubes
+        surface_mesh = voxelized.as_boxes()
 
-        # ---------------------------
-        # 4. Metrics
-        # ---------------------------
-        voxelMetrics = self.computeVoxelMetrics(originalMask, voxelMask)
-        volumeMetrics = self.computeVolumeMetrics(
-            voxelMetrics["voxels_A"],
-            voxelMetrics["voxels_B"],
-            pitch,
-        )
-
-        # ---------------------------
-        # 5. Output voxel model
-        # ---------------------------
-        if voxelized.matrix.sum() < 50_000:
-            surface_mesh = voxelized.as_boxes()
-        else:
-            slicer.util.warningDisplay(
-                "Voxel mesh too dense to visualize safely.\nMetrics computed anyway."
-            )
-
+        # Convert Trimesh back to VTK PolyData for Slicer
+        v_out = surface_mesh.vertices
+        f_out = surface_mesh.faces
+        
+        # Create VTK object
         out_poly = vtk.vtkPolyData()
-        v_vtk = vtk_np.numpy_to_vtk(surface_mesh.vertices, deep=True)
+        
+        # Set points
+        v_vtk = vtk.util.numpy_support.numpy_to_vtk(v_out, deep=True)
         pts = vtk.vtkPoints()
         pts.SetData(v_vtk)
         out_poly.SetPoints(pts)
-
-        faces_out = surface_mesh.faces
-        num_faces = faces_out.shape[0]
-        cells_array = hstack(
-            [full((num_faces, 1), 3), faces_out]
-        ).astype(int64)
-
-        cells_vtk = vtk_np.numpy_to_vtkIdTypeArray(cells_array, deep=True)
+        
+        # Set cells as triangles for the cube faces
+        num_faces = f_out.shape[0]
+        # VTK expects [3, id1, id2, id3, 3, id4...]
+        cells_array = hstack([full((num_faces, 1), 3), f_out]).astype(int64)
+        cells_vtk = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array, deep=True)
+        
         connectivity = vtk.vtkCellArray()
         connectivity.SetCells(num_faces, cells_vtk)
         out_poly.SetPolys(connectivity)
 
-        outputVoxelModel.SetAndObservePolyData(out_poly)
-        outputVoxelModel.CreateDefaultDisplayNodes()
-        outputVoxelModel.GetDisplayNode().SetVisibility(True)
+        # Update Slicer Model Node
+        outputModel.SetAndObservePolyData(out_poly)
+        
+        if not outputModel.GetDisplayNode():
+            outputModel.CreateDefaultDisplayNodes()
+        
+        outputModel.GetDisplayNode().SetVisibility(True)
+        outputModel.GetPolyData().Modified()
+
+    def voxelizeModelToModelNew(self, 
+                            inputVolume: vtkMRMLScalarVolumeNode,
+                            inputModel: vtkMRMLModelNode, 
+                            outputModel: vtkMRMLModelNode, 
+                            pitch: float, 
+                            ui=None,) -> None:
+
+        import trimesh
+        from numpy import hstack, full, int64, sum, logical_and, logical_or
+
+        if not inputVolume:
+            raise ValueError("Invalid input volume")
+        
+        if not inputModel:
+            raise ValueError("Invalid input model")
+        
+        if not outputModel:
+            raise ValueError("Invalid output model")
+        
+        # ============================================================
+        # 1) INPUT MODEL → LABELMAP
+        # ============================================================
+
+        # Create segmentation node
+        segNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+        slicer.modules.segmentations.logic().ImportModelToSegmentationNode(inputModel, segNode)
+
+        # Create labelmap volume aligned to inputVolume
+        labelmapNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+        slicer.modules.volumes.logic().CreateLabelVolumeFromVolume(
+            slicer.mrmlScene,
+            labelmapNode,
+            inputVolume
+        )
+
+        # Export segmentation to labelmap
+        slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(segNode, labelmapNode)
+
+        # Get numpy mask
+        original_arr = slicer.util.arrayFromVolume(labelmapNode)
+        grid_original = original_arr > 0
+        originalVoxelCount = int(sum(grid_original))
+
+        # ============================================================
+        # 2) MODEL → TRIMESH
+        # ============================================================
+
+        inputModel.HardenTransform()
+        polyData = inputModel.GetPolyData()
+
+        points = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
+        cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
+        faces = cells.reshape(-1, 4)[:, 1:]
+
+        mesh = trimesh.Trimesh(vertices=points, faces=faces, process=False)
+
+        # ============================================================
+        # 3) VOXELIZATION GEOMETRICA
+        # ============================================================
+
+        voxelized = mesh.voxelized(pitch=pitch).fill()
+
+        # ============================================================
+        # 4) VOXEL GRID → MESH
+        # ============================================================
+
+        surface_mesh = voxelized.as_boxes()
+        v_out = surface_mesh.vertices
+        f_out = surface_mesh.faces
+
+        out_poly = vtk.vtkPolyData()
+
+        v_vtk = vtk.util.numpy_support.numpy_to_vtk(v_out, deep=True)
+        pts = vtk.vtkPoints()
+        pts.SetData(v_vtk)
+        out_poly.SetPoints(pts)
+
+        num_faces = f_out.shape[0]
+        cells_array = hstack([full((num_faces, 1), 3), f_out]).astype(int64)
+        cells_vtk = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array, deep=True)
+
+        connectivity = vtk.vtkCellArray()
+        connectivity.SetCells(num_faces, cells_vtk)
+        out_poly.SetPolys(connectivity)
+
+        outputModel.SetAndObservePolyData(out_poly)
+
+        if not outputModel.GetDisplayNode():
+            outputModel.CreateDefaultDisplayNodes()
+
+        outputModel.GetDisplayNode().SetVisibility(True)
+        outputModel.GetPolyData().Modified()
+
+        # ============================================================
+        # 5) VOXELIZED MODEL → LABELMAP (nel volume)
+        # ============================================================
+
+        segNode_vox = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+        slicer.modules.segmentations.logic().ImportModelToSegmentationNode(outputModel, segNode_vox)
+
+        labelmapNode_vox = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+        slicer.modules.volumes.logic().CreateLabelVolumeFromVolume(
+            slicer.mrmlScene,
+            labelmapNode_vox,
+            inputVolume
+        )
+
+        slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(segNode_vox, labelmapNode_vox)
+
+        voxel_arr = slicer.util.arrayFromVolume(labelmapNode_vox)
+        grid_voxelized = voxel_arr > 0
+        voxelizedVoxelCount = int(sum(grid_voxelized))
+
+        # ============================================================
+        # 6) METRICS
+        # ============================================================
+
+        intersection = logical_and(grid_original, grid_voxelized)
+        union = logical_or(grid_original, grid_voxelized)
+
+        intersection_count = sum(intersection)
+        union_count = sum(union)
+
+        # Dice
+        dice = (2.0 * intersection_count) / (originalVoxelCount + voxelizedVoxelCount) \
+            if (originalVoxelCount + voxelizedVoxelCount) > 0 else 0.0
+
+        # IoU
+        iou = intersection_count / union_count if union_count > 0 else 0.0
+
+        # DeltaV
+        deltaV = abs(voxelizedVoxelCount - originalVoxelCount) / originalVoxelCount \
+                if originalVoxelCount > 0 else 0.0
+
+        # ============================================================
+        # 7) UI
+        # ============================================================
 
         if ui:
-            ui.voxelCountOriginal.setText(f"{volumeMetrics['volume_A_mm3']}")
-            ui.voxelCountNew.setText(f"{volumeMetrics['volume_B_mm3']}")
-            ui.diceLabel.setText(f"{voxelMetrics['dice']:.3f}")
-            ui.iouLabel.setText(f"{voxelMetrics['iou']:.3f}")
-            ui.volumeDiffLabel.setText(
-                f"{volumeMetrics['relative_difference_percent']:+.2f}%"
-            )
+            ui.voxelCountOriginal.setText(f"{originalVoxelCount}")
+            ui.voxelCountNew.setText(f"{voxelizedVoxelCount}")
+            ui.diceScore.setText(f"{dice:.6f}")
+            ui.iouScore.setText(f"{iou:.6f}")
+            ui.deltaV.setText(f"{deltaV:.6f}")
             slicer.app.processEvents()
 
-        return {
-            **voxelMetrics,
-            **volumeMetrics,
-        }
+        # ============================================================
+        # 8) CLEANUP (optional)
+        # ============================================================
 
-    def voxelizeModelToModel(self, inputModel: vtkMRMLModelNode, outputModel: vtkMRMLModelNode, 
-                                pitch: float, ui=None,) -> None:
-            import trimesh
-            from numpy import sum, hstack, full, int64
-            
-            ###Voxelizes the entire model using a given pitch.
-            ###:param pitch: float
-            
+        # slicer.mrmlScene.RemoveNode(segNode)
+        # slicer.mrmlScene.RemoveNode(segNode_vox)
+        # slicer.mrmlScene.RemoveNode(labelmapNode)
+        # slicer.mrmlScene.RemoveNode(labelmapNode_vox)
 
-            if not inputModel or not outputModel:
-                raise ValueError("Invalid input or output model")
-            
-            # Convert Slicer MRML model to Trimesh
-            inputModel.HardenTransform()
-            polyData = inputModel.GetPolyData()
-            
-            # Extract vertices and faces from VTK PolyData
-            points = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
-            cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
-            
-            # VTK polys are stored as [n, id1, id2, id3, n, id4...] triangles
-            faces = cells.reshape(-1, 4)[:, 1:]
 
-            mesh = trimesh.Trimesh(vertices=points, faces=faces)
 
-            # Voxelize and fill: create the occupancy grid and fill the interior
-            voxelized = mesh.voxelized(pitch=pitch).fill()
 
-            # The 'matrix' is a boolean array where True represents a filled voxel
-            totalVoxelCount = sum(voxelized.matrix)
-
-            if ui:
-                ui.voxelCountNew.setText(f"{totalVoxelCount}")
-            
-                # Ensure the UI refreshes immediately
-                slicer.app.processEvents()
-            
-            # Convert back to geometry: create a single mesh made of cubes
-            surface_mesh = voxelized.as_boxes()
-
-            # Convert Trimesh back to VTK PolyData for Slicer
-            v_out = surface_mesh.vertices
-            f_out = surface_mesh.faces
-            
-            # Create VTK object
-            out_poly = vtk.vtkPolyData()
-            
-            # Set points
-            v_vtk = vtk.util.numpy_support.numpy_to_vtk(v_out, deep=True)
-            pts = vtk.vtkPoints()
-            pts.SetData(v_vtk)
-            out_poly.SetPoints(pts)
-            
-            # Set cells as triangles for the cube faces
-            num_faces = f_out.shape[0]
-            # VTK expects [3, id1, id2, id3, 3, id4...]
-            cells_array = hstack([full((num_faces, 1), 3), f_out]).astype(int64)
-            cells_vtk = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array, deep=True)
-            
-            connectivity = vtk.vtkCellArray()
-            connectivity.SetCells(num_faces, cells_vtk)
-            out_poly.SetPolys(connectivity)
-
-            # Update Slicer Model Node
-            outputModel.SetAndObservePolyData(out_poly)
-            
-            if not outputModel.GetDisplayNode():
-                outputModel.CreateDefaultDisplayNodes()
-            
-            outputModel.GetDisplayNode().SetVisibility(True)
-            outputModel.GetPolyData().Modified()
-                    
-            
-            
-            
-            
-            
-            
-            
     def scaleModel(self, inputModel, outputModel, scaleFactor=1.0):
             """
             Scales the entire model by a given factor.
