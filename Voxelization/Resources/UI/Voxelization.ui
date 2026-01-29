@@ -120,7 +120,14 @@
       <string>Outputs</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_3">
-      <item row="0" column="1">
+      <item row="1" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Export folder:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
        <widget class="qMRMLNodeComboBox" name="outputSelectorModel">
         <property name="toolTip">
          <string>Pick the output to the algorithm.</string>
@@ -157,15 +164,34 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label">
+      <item row="2" column="0">
+       <widget class="QLabel" name="label_3">
         <property name="text">
-         <string>Export folder:</string>
+         <string>Export format:</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="1" column="2">
        <widget class="ctkDirectoryButton" name="DirectoryButton"/>
+      </item>
+      <item row="2" column="2">
+       <widget class="QComboBox" name="exportFormatCombo">
+        <item>
+         <property name="text">
+          <string>VTK</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>STL</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>MSH</string>
+         </property>
+        </item>
+       </widget>
       </item>
      </layout>
     </widget>
@@ -185,7 +211,7 @@
       <item row="0" column="0">
        <widget class="QLabel" name="voxelCountLabel">
         <property name="text">
-         <string>Original voxel count:</string>
+         <string>Original model (voxel count)</string>
         </property>
        </widget>
       </item>
@@ -196,57 +222,57 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="diceLabel">
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_2">
         <property name="text">
-         <string>Dice:</string>
+         <string>Post voxelization (voxel count):</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="voxelCountNew">
+        <property name="text">
+         <string>N/A</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="deltaVLabel">
+        <property name="text">
+         <string>ΔV (%):</string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
-       <widget class="QLabel" name="diceScore">
-        <property name="text">
-         <string>N/A</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="iouLabel">
-        <property name="text">
-         <string>IoU:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QLabel" name="iouScore">
-        <property name="text">
-         <string>N/A</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="0">
-       <widget class="QLabel" name="deltaVLabel">
-        <property name="text">
-         <string>delta_V:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="1">
        <widget class="QLabel" name="deltaV">
         <property name="text">
          <string>N/A</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="label_2">
+      <item row="3" column="0">
+       <widget class="QLabel" name="diceLabel">
         <property name="text">
-         <string>Model voxel count:</string>
+         <string>Dice:</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
-       <widget class="QLabel" name="voxelCountNew">
+      <item row="3" column="1">
+       <widget class="QLabel" name="diceScore">
+        <property name="text">
+         <string>N/A</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="iouLabel">
+        <property name="text">
+         <string>IoU:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QLabel" name="iouScore">
         <property name="text">
          <string>N/A</string>
         </property>
@@ -275,6 +301,13 @@
      </property>
      <property name="text">
       <string>Export files to folder</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="infoLabel">
+     <property name="text">
+      <string/>
      </property>
     </widget>
    </item>
@@ -353,6 +386,22 @@
     <hint type="destinationlabel">
      <x>220</x>
      <y>161</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>Voxelization</sender>
+   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
+   <receiver>inputVolumeSelector</receiver>
+   <slot>setMRMLScene(vtkMRMLScene*)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>268</x>
+     <y>255</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>311</x>
+     <y>55</y>
     </hint>
    </hints>
   </connection>

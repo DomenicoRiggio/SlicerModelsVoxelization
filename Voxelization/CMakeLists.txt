@@ -3,7 +3,8 @@ set(MODULE_NAME Voxelization)
 
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
-  ${MODULE_NAME}.py
+  ${MODULE_NAME}.py,
+  ${MODULE_NAME}Lib/logicUtils.py
   )
 
 set(MODULE_PYTHON_RESOURCES
