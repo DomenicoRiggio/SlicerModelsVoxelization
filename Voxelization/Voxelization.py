@@ -1,45 +1,59 @@
+# Standard library imports
 import os
+import sys
+
+# Ensure the module directory is in sys.path so VoxelizationLib can be imported
+_moduleDir = os.path.dirname(os.path.abspath(__file__))
+if _moduleDir not in sys.path:
+    sys.path.insert(0, _moduleDir)
 from typing import Optional
 
+# VTK is the 3D rendering/geometry backbone used by 3D Slicer
 import vtk
 
+# Slicer core imports
 import slicer
 from slicer.i18n import tr as _
 from slicer.i18n import translate
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
-from slicer.parameterNodeWrapper import parameterNodeWrapper
+from slicer.parameterNodeWrapper import parameterNodeWrapper, WithinRange, Default
+from typing import Annotated
 
 from slicer import vtkMRMLModelNode, vtkMRMLScalarVolumeNode
+from slicer import vtkMRMLSegmentationNode
 
 
+# =============================================================================
+# Voxelization  -  Module descriptor
+# Registers the module in Slicer's module menu with metadata.
+# =============================================================================
 #
 # Voxelization
 #
 
 
+# ScriptedLoadableModule provides the standard module registration API.
 class Voxelization(ScriptedLoadableModule):
-    """Uses ScriptedLoadableModule base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
-
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = _("Voxelization")
-        # TODO: set categories (folders where the module shows up in the module selector)
         self.parent.categories = [translate("qSlicerAbstractCoreModule", "Utilities")]
-        self.parent.dependencies = []  # TODO: add here list of module names that this module requires
-        self.parent.contributors = ["Laura Lichtlein (KIT Institute of Biomedical Engineering)", "Domenico Riggio (KIT Institute of Biomedical Engineering)", "Ciro Benito Raggio (KIT Institute of Biomedical Engineering)"]
+        self.parent.dependencies = []
+        self.parent.contributors = [
+            "Laura Lichtlein (KIT Institute of Biomedical Engineering)",
+            "Domenico Riggio (KIT Institute of Biomedical Engineering)",
+            "Ciro Benito Raggio (KIT Institute of Biomedical Engineering)",
+        ]
         self.parent.helpText = _("""
-This module provides tools for 3D model manipulation and export. Features include uniformly resizing models, 
-converting surface meshes into solid cubical voxel models and exporting processed the models to a chosen 
+This module provides tools for 3D model manipulation and export. Features include uniformly resizing models,
+converting surface meshes into solid cubical voxel models and exporting processed the models to a chosen
 directory in .vtk, .stl, and .msh (Gmsh 2.2 ASCII) formats.
 """)
         self.parent.acknowledgementText = _("""
-This module was developed by Laura Lichtlein, Domenico Riggio, Ciro Benito Raggio (KIT Institute of Biomedical Engingeering).
+This module was developed by Laura Lichtlein, Domenico Riggio, Ciro Benito Raggio
+(KIT Institute of Biomedical Engineering).
 """)
-
-
 
 
 #
@@ -47,19 +61,25 @@ This module was developed by Laura Lichtlein, Domenico Riggio, Ciro Benito Raggi
 #
 
 
+# =============================================================================
+# VoxelizationParameterNode  -  Typed, auto-serialised parameter storage
+# @parameterNodeWrapper generates getters/setters for each field and connects
+# them to the MRML scene so values survive scene save/load and undo/redo.
+# =============================================================================
 @parameterNodeWrapper
 class VoxelizationParameterNode:
     """
-    The parameters needed by module.
-
-    inputVolume - The VTK reference scalar volume
-    inputModel  - The VTK model to be voxelized.
-    pitch       - The value setting the side length for the voxels.
-    outputModel  - The VTK model to be exported.
+    inputVolume       - The VTK reference scalar volume
+    inputModel        - The model to be voxelized (Model mode)
+    inputSegmentation - The segmentation node (Segmentation mode)
+    pitch             - Side length for the voxels
+    outputModel       - The output model node
     """
     inputVolume: vtkMRMLScalarVolumeNode
     inputModel: vtkMRMLModelNode
-    pitch: float
+    inputSegmentation: vtkMRMLSegmentationNode
+    pitch: Annotated[float, WithinRange(0.1, 5.0), Default(0.5)]
+    threshold: Annotated[float, WithinRange(0.0, 1.0), Default(0.5)]
     outputModel: vtkMRMLModelNode
 
 
@@ -68,195 +88,752 @@ class VoxelizationParameterNode:
 #
 
 
+# =============================================================================
+# VoxelizationWidget  -  GUI controller
+# Inherits ScriptedLoadableModuleWidget (Slicer panel lifecycle) and
+# VTKObservationMixin (safe VTK observer management with auto-cleanup).
+# =============================================================================
 class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
-    """Uses ScriptedLoadableModuleWidget base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
 
     def __init__(self, parent=None) -> None:
-        """Called when the user opens the module the first time and the widget is initialized."""
         ScriptedLoadableModuleWidget.__init__(self, parent)
-        VTKObservationMixin.__init__(self)  # needed for parameter node observation
-        self.logic = None
-        self._parameterNode = None
-        self._parameterNodeGuiTag = None
-        self.requiredDeps = ["trimesh", "meshio"]
-        
+        VTKObservationMixin.__init__(self)
+        self.logic = None  # Business logic instance
+        self._parameterNode = None  # Currently active parameter node
+        self._parameterNodeGuiTag = None  # Tag returned by connectGui(); needed to disconnect later
+        self.requiredDeps = ["trimesh", "meshio", "rtree"]  # Python packages required at runtime
+        self._segmentationObserverTag = None  # VTK observer tag on the currently watched segmentation node
+        self._observedSegmentationNode = None  # Reference to the segmentation node being observed
+        self._lastOutputNode = None  # Last voxelized output node — used for export
+        self._metricsStore   = {}    # {modelName: {metricKey: value}} — persists metrics per model
+
+    # ------------------------------------------------------------------
+    # Dependency check
+    # ------------------------------------------------------------------
+
     def checkDependencies(self):
         from importlib.util import find_spec
-        allPresent = all(find_spec(mod) is not None for mod in self.requiredDeps)
-        
+        allPresent = all(find_spec(mod) is not None for mod in self.requiredDeps)  # find_spec returns None when the package is not installed
+
         if not allPresent:
             if not slicer.util.confirmOkCancelDisplay(
-                        "The dependencies needed for the extension will be installed, the operation may take a few minutes. A Slicer restart will be necessary.",
-                        "Press OK to install and restart."
-                    ):
-                        raise ValueError("Missing dependencies.")
+                "The dependencies needed for the extension will be installed. "
+                "The operation may take a few minutes. A Slicer restart will be necessary.",
+                "Press OK to install and restart.",
+            ):
+                raise ValueError("Missing dependencies.")
 
-            
             slicer.util.setPythonConsoleVisible(True)
-            print(f"Installing missing dependencies, please wait...")
+            print("Installing missing dependencies, please wait...")
 
             try:
                 for dep in self.requiredDeps:
                     print(f"Installing {dep}...")
                     slicer.util.pip_install(dep)
-                                
-                print(f"All dependencies installed successfully.")
+                print("All dependencies installed successfully.")
                 slicer.app.restart()
             except Exception as e:
-                slicer.util.errorDisplay(f"Failed to install requirements: {e}")            
-        
+                slicer.util.errorDisplay(f"Failed to install requirements: {e}")
+
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
 
     def setup(self) -> None:
-        """Called when the user opens the module the first time and the widget is initialized."""
         ScriptedLoadableModuleWidget.setup(self)
 
-        # Load widget from .ui file (created by Qt Designer).
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/Voxelization.ui"))
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/Voxelization.ui"))  # Load the Qt Designer .ui file and embed it in the module panel
         self.layout.addWidget(uiWidget)
-        self.ui = slicer.util.childWidgetVariables(uiWidget)
+        self.ui = slicer.util.childWidgetVariables(uiWidget)  # childWidgetVariables creates self.ui.<widgetName> for every named widget
+        uiWidget.setMRMLScene(slicer.mrmlScene)  # Required so qMRMLNodeComboBox widgets know which scene to list nodes from
 
-        # Set scene in MRML widgets.
-        uiWidget.setMRMLScene(slicer.mrmlScene)
-
-        # Create logic class that implements all computations.
         self.logic = VoxelizationLogic()
 
-        # Connections
-
-        # These connections ensure that we update parameter node when scene is closed
-        self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)
+        # Scene observers
+        self.addObserver(slicer.mrmlScene, slicer.mrmlScene.StartCloseEvent, self.onSceneStartClose)  # Observe scene open/close to reset the parameter node accordingly
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
-        # Buttons
+        # Radio buttons — only need to connect one; toggled fires for both
+        self.ui.modelRadioButton.toggled.connect(self.onInputTypeToggled)  # toggled fires for BOTH the checked and unchecked button - one connection is enough
+
+        # When user picks a different segmentation node → refresh segment list
+        self.ui.inputSegmentationSelector.currentNodeChanged.connect(self.onSegmentationNodeChanged)  # Rebuild the segment list whenever the user picks a different segmentation node
+
+        # Update the output name preview whenever the input selection changes
+        self.ui.inputSegmentSelector.currentIndexChanged.connect(self._updateOutputNamePreview)
+        self.ui.inputModelSelector.currentNodeChanged.connect(self._updateOutputNamePreview)
+
+        # Action buttons
         self.ui.voxelButton.connect("clicked(bool)", self.onVoxelButton)
         self.ui.exportToFileButton.connect("clicked(bool)", self.onExportButton)
+        self.ui.exportMetricsButton.connect("clicked(bool)", self.onExportMetricsButton)
+        self.ui.metricsModelCombo.currentIndexChanged.connect(self._onMetricsModelChanged)
 
-        # Make sure parameter node is initialized (needed for module reload)
+        # Initialise the metrics table with row labels
+        self._initMetricsTable()
+        self.ui.booleanApplyButton.connect("clicked(bool)", self.onBooleanApplyButton)
+        self.ui.booleanModelACombo.currentIndexChanged.connect(self._clearBooleanResult)
+        self.ui.booleanModelBCombo.currentIndexChanged.connect(self._clearBooleanResult)
+        self.ui.booleanOperationCombo.currentIndexChanged.connect(self._clearBooleanResult)
+
+        # Populate boolean model combos when the boolean section is expanded
+        self.ui.booleanCollapsibleButton.connect("contentsCollapsed(bool)", self.onBooleanSectionToggled)
+        self.ui.outputsCollapsibleButton.connect("contentsCollapsed(bool)", self.onExportSectionToggled)
+
+        # Boolean section starts disabled — enabled once 2+ voxelized models exist
+        self._updateBooleanSectionState()
+
+        # Start in Model mode
+        self.ui.segmentationRadioButton.setChecked(True)  # Default to Segmentation mode on first open
+        self._updateInputVisibility()
+
         self.initializeParameterNode()
         self.checkDependencies()
 
+    # ------------------------------------------------------------------
+    # Input-type toggle
+    # ------------------------------------------------------------------
+
+    def onInputTypeToggled(self, modelChecked):
+        """Called whenever the Model/Segmentation radio changes."""
+        self._updateInputVisibility()
+        self._checkCanApply()
+
+    def _updateInputVisibility(self):
+        """Show Model row OR Segmentation + Segment rows — never both."""
+        isModel = self.ui.modelRadioButton.isChecked()
+  # Show Model row (label + node selector showing only vtkMRMLModelNode)
+        # Model row
+        self.ui.inputModelLabel.setVisible(isModel)
+        self.ui.inputModelSelector.setVisible(isModel)
+
+        # Segmentation rows
+        # NOTE: widget names must match exactly what is in Voxelization.ui  # NOTE: widget names must match exactly what is declared in Voxelization.ui
+        self.ui.inputSegmentionLabel.setVisible(not isModel)       # "Input segmentation:"  # 'Input segmentation:' label
+        self.ui.inputSegmentationSelector.setVisible(not isModel)  # qMRMLNodeComboBox  # qMRMLNodeComboBox filtered to vtkMRMLSegmentationNode
+        self.ui.inputSegmentLabel.setVisible(not isModel)          # "Segment:"  # 'Segment:' label
+        self.ui.inputSegmentSelector.setVisible(not isModel)       # QComboBox (segment names)  # Plain QComboBox populated dynamically from Python
+
+    # ------------------------------------------------------------------
+    # Segment combo population
+    # ------------------------------------------------------------------
+
+    def onSegmentationNodeChanged(self, node):
+        """
+        Called when the user selects a different segmentation node.
+        Repopulates inputSegmentSelector with that node's segment names.
+        """
+        # Stop watching the old node
+        if self._observedSegmentationNode and self._segmentationObserverTag:  # Detach VTK observer from the old node to prevent memory leaks
+            self._observedSegmentationNode.GetSegmentation().RemoveObserver(
+                self._segmentationObserverTag
+            )
+            self._segmentationObserverTag = None
+            self._observedSegmentationNode = None
+
+        self._populateSegmentCombo(node)
+
+        # If no node selected, clear the combo explicitly
+        if not node:
+            self.ui.inputSegmentSelector.clear()
+            self.ui.outputSelectorModel.setCurrentNode(None)
+            self._lastOutputNode = None
+
+        # Watch the new node so the list stays up to date
+        if node:
+            self._observedSegmentationNode = node
+            self._segmentationObserverTag = node.GetSegmentation().AddObserver(
+                vtk.vtkCommand.ModifiedEvent, self._onSegmentationModified
+            )
+
+        self._checkCanApply()
+
+    def _onSegmentationModified(self, caller, event):
+        """Refresh the segment list when segments are added or removed."""
+        self._populateSegmentCombo(self._observedSegmentationNode)
+        self._checkCanApply()
+
+    def _updateOutputNamePreview(self, *args):
+        """
+        Show a preview of the output name in the info label.
+        Does NOT create any node — the node is created only when Apply is clicked.
+        """
+        isModel = self.ui.modelRadioButton.isChecked()
+
+        if isModel:
+            inputNode = self.ui.inputModelSelector.currentNode()
+            if not inputNode:
+                self.ui.outputSelectorModel.setCurrentNode(None)
+                self._lastOutputNode = None
+                self.setInfoLabel("")
+                return
+            baseName = f"{inputNode.GetName()}_vox"
+        else:
+            segNode = self.ui.inputSegmentationSelector.currentNode()
+            segName = self.ui.inputSegmentSelector.currentText
+            if not segNode or not segName:
+                self.ui.outputSelectorModel.setCurrentNode(None)
+                self._lastOutputNode = None
+                self.setInfoLabel("")
+                return
+            baseName = f"{segName}_vox"
+
+        # Find the unique name without creating anything
+        uniqueName = baseName
+        counter    = 1
+        while slicer.mrmlScene.GetFirstNodeByName(uniqueName):
+            uniqueName = f"{baseName}_{counter}"
+            counter   += 1
+
+        # Clear any stale output node and show predicted name as info text only
+        self.ui.outputSelectorModel.setCurrentNode(None)
+        self._lastOutputNode = None
+        self.setInfoLabel(f"Output will be: {uniqueName}")
+
+    def _populateSegmentCombo(self, segmentationNode):
+        """
+        Fill inputSegmentSelector (QComboBox) with segments from segmentationNode.
+        Item text  = human-readable segment name
+        Item data  = segment ID (used internally; stable even if names are duplicated)
+        """
+        combo = self.ui.inputSegmentSelector
+        combo.clear()  # combo.clear() empties the list before repopulating
+
+        if segmentationNode is None:
+            return
+
+        segmentation = segmentationNode.GetSegmentation()
+        for i in range(segmentation.GetNumberOfSegments()):  # addItem(display_text, user_data): name shown to user, ID stored internally
+            segId   = segmentation.GetNthSegmentID(i)
+            segName = segmentation.GetSegment(segId).GetName()
+            combo.addItem(segName, segId)   # addItem(display_text, user_data)  # Using ID as data avoids bugs when two segments share a name
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     def cleanup(self) -> None:
-        """Called when the application closes and the module widget is destroyed."""
+        if self._observedSegmentationNode and self._segmentationObserverTag:
+            self._observedSegmentationNode.GetSegmentation().RemoveObserver(
+                self._segmentationObserverTag
+            )
         self.removeObservers()
 
     def enter(self) -> None:
-        """Called each time the user opens this module."""
-        # Make sure parameter node exists and observed
         self.initializeParameterNode()
 
     def exit(self) -> None:
-        """Called each time the user opens a different module."""
-        # Do not react to parameter node changes (GUI will be updated when the user enters into the module)
         if self._parameterNode:
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
             self._parameterNodeGuiTag = None
             self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
 
     def onSceneStartClose(self, caller, event) -> None:
-        """Called just before the scene is closed."""
-        # Parameter node will be reset, do not use it anymore
         self.setParameterNode(None)
 
     def onSceneEndClose(self, caller, event) -> None:
-        """Called just after the scene is closed."""
-        # If this module is shown while the scene is closed then recreate a new parameter node immediately
         if self.parent.isEntered:
             self.initializeParameterNode()
 
     def initializeParameterNode(self) -> None:
-        """Ensure parameter node exists and observed."""
-        # Parameter node stores all user choices in parameter values, node selections, etc.
-        # so that when the scene is saved and reloaded, these settings are restored.
-
         self.setParameterNode(self.logic.getParameterNode())
 
-        # Select default input nodes if nothing is selected yet to save a few clicks for the user
-        if self._parameterNode and not self._parameterNode.inputModel:
-            firstModelNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLModelNode")
-            if firstModelNode:
-                self._parameterNode.inputModel = firstModelNode
- 
-        if self._parameterNode and not self._parameterNode.inputVolume:
-            firstVolumeNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
-            if firstVolumeNode:
-                self._parameterNode.inputVolume = firstVolumeNode
-                
-    def setParameterNode(self, inputParameterNode: Optional[VoxelizationParameterNode]) -> None:
-        """
-        Set and observe parameter node.
-        Observation is needed because when the parameter node is changed then the GUI must be updated immediately.
-        """
+        if self._parameterNode and not self._parameterNode.inputVolume:  # Pre-select the first available volume to save the user a click
+            firstVolume = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+            if firstVolume:
+                self._parameterNode.inputVolume = firstVolume
 
+        # Clear any leftover output so the selector always starts empty.  # Output node is created on Apply - intentionally left empty here
         if self._parameterNode:
-                self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-                self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-        
+            self._parameterNode.outputModel = None
+
+    def setParameterNode(self, inputParameterNode: Optional[VoxelizationParameterNode]) -> None:
+        if self._parameterNode:
+            self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+
         self._parameterNode = inputParameterNode
         if self._parameterNode:
-            # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
-            # ui element that needs connection.
-            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
+            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)  # connectGui() binds widgets whose 'SlicerParameterName' property matches a field
             self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
             self._checkCanApply()
-    
+
     def setInfoLabel(self, text):
         self.ui.infoLabel.setText(text)
 
+    # ------------------------------------------------------------------
+    # Apply-button guard
+    # ------------------------------------------------------------------
+
     def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.inputModel and self._parameterNode.outputModel:
-            self.ui.exportToFileButton.enabled = True
-            self.ui.exportToFileButton.toolTip = _("Export model")
-
-            self.ui.voxelButton.enabled = True
-            self.ui.voxelButton.toolTip = _("Voxelize model")
-        else:
-            self.ui.exportToFileButton.enabled = False
-            self.ui.exportToFileButton.toolTip = _("Select input and output models")
-
+        if self._parameterNode is None:
             self.ui.voxelButton.enabled = False
-            self.ui.voxelButton.toolTip = _("Select input and output models")
+            self.ui.exportToFileButton.enabled = False
+            return
+
+        isModel = self.ui.modelRadioButton.isChecked()
+
+        if isModel:
+            hasInput = self.ui.inputModelSelector.currentNode() is not None  # Both a segmentation node AND at least one segment must be present
+        else:
+            # Need both a segmentation node AND at least one segment chosen
+            hasInput = (
+                self.ui.inputSegmentationSelector.currentNode() is not None
+                and self.ui.inputSegmentSelector.count > 0
+            )
+
+        hasVolume = self._parameterNode.inputVolume is not None
+        # Output node is created automatically on Apply — not required upfront  # Output node is created automatically on Apply - not required upfront
+        canRun    = hasInput and hasVolume
+
+        self.ui.voxelButton.enabled = canRun
+        self.ui.voxelButton.toolTip = (
+            _("Voxelize") if canRun
+            else _("Select input (model or segmentation + segment), volume, and output model")
+        )
+        self.ui.exportToFileButton.enabled = canRun
+        self.ui.exportToFileButton.toolTip = (
+            _("Export model") if canRun else _("Select input and output first")
+        )
+
+    # ------------------------------------------------------------------
+    # Voxelize button
+    # ------------------------------------------------------------------
 
     def onVoxelButton(self) -> None:
-        """Voxelize the input model"""
-
         with slicer.util.tryWithErrorDisplay(_("Voxelization failed."), waitCursor=True):
             self.setInfoLabel("")
-            inputVolume = self.ui.inputVolumeSelector.currentNode()
-            inputModel = self.ui.inputModelSelector.currentNode()
-            outputModel = self.ui.outputSelectorModel.currentNode()
-            
-            pitch = float(self.ui.pitchWidget.value)
-            
 
-            with slicer.util.tryWithErrorDisplay(_("Operation failed."), waitCursor=True):
-                self.logic.voxelizeModelToModel(inputVolume, inputModel, outputModel, pitch, self.ui)
-            
-            self.setInfoLabel("Processing completed.")
-                
+            # Clear previous output so the selector doesn't carry a stale node
+            self._parameterNode.outputModel = None
+
+            inputVolume = self.ui.inputVolumeSelector.currentNode()
+            pitch       = float(self.ui.pitchWidget.value)
+            threshold   = float(self.ui.thresholdWidget.value)
+            isModel     = self.ui.modelRadioButton.isChecked()
+
+            if not inputVolume:
+                raise ValueError("Please select an input volume.")
+
+            # Warn for very small pitch values — computation grows as pitch^-3
+            if pitch < 0.5:
+                msg = (
+                    f"Pitch {pitch:.2f} mm is very small and may cause a long computation "
+                    f"or freeze the application. Do you want to proceed?"
+                )
+                if not slicer.util.confirmOkCancelDisplay(msg, "Warning: Small pitch value"):
+                    return
+
+            tempMesh  = None
+
+            if isModel:
+                # ---- Model mode ----
+                inputMesh = self.ui.inputModelSelector.currentNode()
+                if not inputMesh:
+                    raise ValueError("Please select an input model.")
+                voxName = f"{inputMesh.GetName()}_vox"
+
+            else:
+                # ---- Segmentation mode ----
+                segNode = self.ui.inputSegmentationSelector.currentNode()
+                if not segNode:
+                    raise ValueError("Please select a segmentation node.")
+
+                idx = self.ui.inputSegmentSelector.currentIndex
+                if idx < 0:
+                    raise ValueError("Please select a segment from the list.")
+
+                # itemData holds the stable segment ID (not the display name)
+                segmentId   = self.ui.inputSegmentSelector.itemData(idx)  # Read the segment ID stored as item data (stable unlike the display name)
+                segmentName = self.ui.inputSegmentSelector.currentText
+
+                # Convert that one segment to a temporary model  # Export the chosen segment into a temporary model node
+                inputMesh = self.logic.segmentationToModel(segNode, segmentId)
+                tempMesh  = inputMesh   # remember so we can remove it afterward  # Keep reference so we can remove it after voxelization
+                voxName   = f"{segmentName}_vox"
+
+            # Create the output node with the correct unique name
+            uniqueName = voxName
+            counter    = 1
+            while slicer.mrmlScene.GetFirstNodeByName(uniqueName):
+                uniqueName = f"{voxName}_{counter}"
+                counter   += 1
+
+            outputModel = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", uniqueName)
+            self._parameterNode.outputModel = outputModel
+
+            metricsValues = self.logic.voxelizeModelToModel(inputVolume, inputMesh, outputModel, pitch, threshold, self.ui)
+
+            # Store metrics per model name so switching the combo reloads them
+            if metricsValues:
+                self._metricsStore[uniqueName] = metricsValues
+
+            # Remove the temporary segment model from the scene
+            if tempMesh is not None:
+                slicer.mrmlScene.RemoveNode(tempMesh)
+
+            # Place the result inside a "VoxelizedModels" folder in Subject Hierarchy
+            self.logic.moveNodeToFolder(outputModel, "VoxelizedModels")
+
+            # Store for export and show in selector
+            self._lastOutputNode = outputModel
+            self.ui.outputSelectorModel.setCurrentNode(outputModel)
+
+            # Refresh boolean combos so new model appears there immediately
+            self._populateBooleanCombos()
+            self._updateBooleanSectionState()
+
+            # Refresh export and metrics combos
+            self._populateExportCombo(selectName=uniqueName)
+            self._populateMetricsModelCombo(selectName=uniqueName)
+
+            # Update the table LAST so nothing can overwrite it
+            if metricsValues:
+                self._updateMetricsTable(metricsValues)
+
+            self.setInfoLabel(f"Processing completed. Output: {uniqueName}")
+
+    # ------------------------------------------------------------------
+    # Boolean operations
+    # ------------------------------------------------------------------
+
+    def onBooleanSectionToggled(self, collapsed):
+        """Refresh the model combos every time the section is expanded."""
+        if not collapsed:
+            self._populateBooleanCombos()
+
+    def _updateBooleanSectionState(self):
+        """
+        Enable the Boolean Operations section only when at least 2 voxelized
+        models exist in the VoxelizedModels folder.
+        Disabled with a tooltip explaining why when there are fewer.
+        """
+        shNode   = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId  = shNode.GetSceneItemID()
+        folderId = shNode.GetItemChildWithName(sceneId, "VoxelizedModels")
+
+        count = 0
+        if folderId != 0:
+            children = vtk.vtkIdList()
+            shNode.GetItemChildren(folderId, children)
+            count = children.GetNumberOfIds()
+
+        hasEnough = count >= 2
+        self.ui.booleanCollapsibleButton.setEnabled(hasEnough)
+        if hasEnough:
+            self.ui.booleanCollapsibleButton.toolTip = ""
+        else:
+            self.ui.booleanCollapsibleButton.toolTip = (
+                "Voxelize at least 2 models or segments first to enable boolean operations."
+            )
+
+    def _clearBooleanResult(self, *args):
+        """Clear the result selector when inputs change."""
+        self.ui.booleanOutputSelector.setCurrentNode(None)
+
+    def onExportSectionToggled(self, collapsed):
+        """Refresh the export model combo every time the section is expanded."""
+        if not collapsed:
+            self._populateExportCombo()
+
+    def _populateBooleanCombos(self):
+        """
+        Fill booleanModelACombo and booleanModelBCombo with the names of all
+        nodes inside the VoxelizedModels Subject Hierarchy folder.
+        Only voxelized models are shown — not raw input models.
+        """
+        shNode  = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId = shNode.GetSceneItemID()
+        folderId = shNode.GetItemChildWithName(sceneId, "VoxelizedModels")
+
+        names = []
+        if folderId != 0:
+            children = vtk.vtkIdList()
+            shNode.GetItemChildren(folderId, children)
+            for i in range(children.GetNumberOfIds()):
+                node = shNode.GetItemDataNode(children.GetId(i))
+                if node:
+                    names.append(node.GetName())
+
+        for combo in [self.ui.booleanModelACombo, self.ui.booleanModelBCombo]:
+            current = combo.currentText
+            combo.clear()
+            for name in names:
+                combo.addItem(name)
+            # Restore previous selection if still available
+            idx = combo.findText(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+
+    def _populateExportCombo(self, selectName=None):
+        """
+        Fill exportModelCombo with all models in the VoxelizedModels folder.
+        If selectName is given, select that item automatically.
+        """
+        shNode   = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId  = shNode.GetSceneItemID()
+        folderId = shNode.GetItemChildWithName(sceneId, "VoxelizedModels")
+
+        names = []
+        if folderId != 0:
+            children = vtk.vtkIdList()
+            shNode.GetItemChildren(folderId, children)
+            for i in range(children.GetNumberOfIds()):
+                node = shNode.GetItemDataNode(children.GetId(i))
+                if node:
+                    names.append(node.GetName())
+
+        current = selectName or self.ui.exportModelCombo.currentText
+        self.ui.exportModelCombo.clear()
+        for name in names:
+            self.ui.exportModelCombo.addItem(name)
+
+        idx = self.ui.exportModelCombo.findText(current)
+        if idx >= 0:
+            self.ui.exportModelCombo.setCurrentIndex(idx)
+
+    def _populateMetricsModelCombo(self, selectName=None):
+        """
+        Fill metricsModelCombo with all models in the VoxelizedModels folder.
+        Signals are blocked during population to prevent spurious table resets.
+        """
+        shNode   = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId  = shNode.GetSceneItemID()
+        folderId = shNode.GetItemChildWithName(sceneId, "VoxelizedModels")
+
+        names = []
+        if folderId != 0:
+            children = vtk.vtkIdList()
+            shNode.GetItemChildren(folderId, children)
+            for i in range(children.GetNumberOfIds()):
+                node = shNode.GetItemDataNode(children.GetId(i))
+                if node:
+                    names.append(node.GetName())
+
+        current = selectName or self.ui.metricsModelCombo.currentText
+
+        # Block signals so clear() and addItem() don't trigger _onMetricsModelChanged
+        self.ui.metricsModelCombo.blockSignals(True)
+        self.ui.metricsModelCombo.clear()
+        for name in names:
+            self.ui.metricsModelCombo.addItem(name)
+        idx = self.ui.metricsModelCombo.findText(current)
+        if idx >= 0:
+            self.ui.metricsModelCombo.setCurrentIndex(idx)
+        self.ui.metricsModelCombo.blockSignals(False)
+
+        # Manually trigger table update for the selected model
+        self._onMetricsModelChanged(self.ui.metricsModelCombo.currentIndex)
+
+    def onBooleanApplyButton(self) -> None:
+        """
+        Perform the selected boolean operation on the two chosen voxelized
+        models and place the result in the VoxelizedModels folder.
+        """
+        with slicer.util.tryWithErrorDisplay(_("Boolean operation failed."), waitCursor=True):
+            nameA = self.ui.booleanModelACombo.currentText
+            nameB = self.ui.booleanModelBCombo.currentText
+
+            if not nameA or not nameB:
+                raise ValueError("Please select two voxelized models.")
+
+            # Allow same name only if they are genuinely different nodes
+            nodeA = slicer.mrmlScene.GetFirstNodeByName(nameA)
+            nodeB = slicer.mrmlScene.GetFirstNodeByName(nameB)
+
+            if not nodeA or not nodeB:
+                raise ValueError("Could not find the selected models in the scene.")
+            if nodeA.GetID() == nodeB.GetID():
+                raise ValueError("Model A and Model B must be different nodes.")
+
+            # Estimate computation cost from total vertex count
+            totalVerts = (nodeA.GetPolyData().GetNumberOfPoints() +
+                          nodeB.GetPolyData().GetNumberOfPoints())
+
+            # Warn if large — boolean re-voxelizes both models
+            if totalVerts > 50000:
+                msg = (
+                    f"These models have {totalVerts:,} total vertices. "
+                    f"This operation may take several minutes and will block the interface. Do you want to proceed?"
+                )
+                if not slicer.util.confirmOkCancelDisplay(msg, "Warning: Computationally intensive operation"):
+                    return
+
+            operation = self.ui.booleanOperationCombo.currentText
+            if "Union" in operation:
+                opKey    = "union"
+                opSymbol = "U"
+            elif "Intersection" in operation:
+                opKey    = "intersection"
+                opSymbol = "I"
+            elif "B - A" in operation:
+                opKey    = "difference_ba"
+                opSymbol = "D_BA"
+            else:
+                opKey    = "difference"
+                opSymbol = "D_AB"
+
+            # Build unique output name e.g. "ModelA_U_ModelB"
+            baseName   = f"{nameA}_{opSymbol}_{nameB}"
+            uniqueName = baseName
+            counter    = 1
+            while slicer.mrmlScene.GetFirstNodeByName(uniqueName):
+                uniqueName = f"{baseName}_{counter}"
+                counter   += 1
+
+            resultNode = self.logic.applyBooleanOperation(nodeA, nodeB, opKey, uniqueName)
+            self.logic.moveNodeToFolder(resultNode, "VoxelizedModels")
+            resultNode.CreateDefaultDisplayNodes()
+            resultNode.GetDisplayNode().SetVisibility(True)
+
+            # Show result in the boolean output selector
+            self.ui.booleanOutputSelector.setCurrentNode(resultNode)
+
+            # Refresh export combo so result appears there
+            self._populateExportCombo(selectName=uniqueName)
+            self._populateMetricsModelCombo(selectName=uniqueName)
+            self._updateBooleanSectionState()
+
+            self.setInfoLabel(f"Boolean result: {uniqueName}")
+
+    # ------------------------------------------------------------------
+    # Metrics table
+    # ------------------------------------------------------------------
+
+    # Row definitions: (row index, label text, internal key)
+    _METRIC_ROWS = [
+        (0, "Volume original [cm3]",        "volOriginal"),
+        (1, "Volume voxelized [cm3]",       "volVoxelized"),
+        (2, "ΔV [cm3]",                     "deltaVCm3"),
+        (3, "ΔV [%]",                       "deltaVPct"),
+        (4, "Excluded Mean ± Std",          "meanStd"),
+        (5, "Excluded Median [IQR 5%-95%]", "medianIqr"),
+    ]
+
+    def _initMetricsTable(self):
+        """Populate the table with row labels and N/A values."""
+        import qt
+        t = self.ui.metricsTable
+        t.setRowCount(len(self._METRIC_ROWS))
+        for row, label, _ in self._METRIC_ROWS:
+            t.setItem(row, 0, qt.QTableWidgetItem(label))
+            t.setItem(row, 1, qt.QTableWidgetItem("N/A"))
+        t.horizontalHeader().setStretchLastSection(True)
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(t.NoEditTriggers)
+        t.viewport().update()
+
+    def _onMetricsModelChanged(self, index):
+        """Reload the table when the user picks a different model."""
+        name = self.ui.metricsModelCombo.currentText
+        if name and name in self._metricsStore:
+            self._updateMetricsTable(self._metricsStore[name])
+        else:
+            self._initMetricsTable()
+
+    def _initMetricsTable(self):
+        """Populate the table with row labels and N/A values."""
+        import qt
+        t = self.ui.metricsTable
+        t.setRowCount(len(self._METRIC_ROWS))
+        for row, label, _ in self._METRIC_ROWS:
+            t.setItem(row, 0, qt.QTableWidgetItem(label))
+            t.setItem(row, 1, qt.QTableWidgetItem("N/A"))
+        t.horizontalHeader().setStretchLastSection(True)
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(t.NoEditTriggers)
+        t.viewport().update()
+
+    def _updateMetricsTable(self, values: dict):
+        """
+        Update the value column of the metrics table.
+        """
+        import qt
+        t = self.ui.metricsTable
+        t.setRowCount(len(self._METRIC_ROWS))
+        for row, label, key in self._METRIC_ROWS:
+            t.setItem(row, 0, qt.QTableWidgetItem(label))
+            t.setItem(row, 1, qt.QTableWidgetItem(str(values.get(key, "N/A"))))
+        t.viewport().update()
+        slicer.app.processEvents()
+
+    def onExportMetricsButton(self) -> None:
+        """Export the stored metrics for the selected model to a CSV file."""
+        import csv
+        from qt import QFileDialog
+
+        modelName = self.ui.metricsModelCombo.currentText
+        if not modelName:
+            slicer.util.errorDisplay("Please select a model first.")
+            return
+
+        # Use stored metrics for the selected model
+        if modelName not in self._metricsStore:
+            slicer.util.errorDisplay(f"No metrics stored for '{modelName}'. Run voxelization first.")
+            return
+
+        stored = self._metricsStore[modelName]
+
+        defaultName = f"{modelName}_metrics.csv"
+        startDir = str(self.ui.DirectoryButton.directory).strip()
+        if not startDir or not os.path.isdir(startDir):
+            startDir = os.path.expanduser("~")
+
+        filePath = QFileDialog.getSaveFileName(
+            None,
+            "Save Metrics as CSV",
+            os.path.join(startDir, defaultName),
+            "CSV files (*.csv)"
+        )
+        if isinstance(filePath, tuple):
+            filePath = filePath[0]
+        if not filePath:
+            return
+
+        # Use _METRIC_ROWS to map keys to human-readable labels
+        with open(filePath, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Model", modelName])
+            writer.writerow(["Metric", "Value"])
+            for _, label, key in self._METRIC_ROWS:
+                writer.writerow([label, stored.get(key, "N/A")])
+
+        self.setInfoLabel(f"Metrics saved to: {filePath}")
+
+    # ------------------------------------------------------------------
+    # Export button
+    # ------------------------------------------------------------------
+
     def onExportButton(self) -> None:
-        """Export output model to file"""
         self.setInfoLabel("")
-        outputModel = self.ui.outputSelectorModel.currentNode()
-        directory = self.ui.DirectoryButton.directory
+
+        # Get the model chosen in the export combo
+        exportName  = self.ui.exportModelCombo.currentText
+        outputModel = slicer.mrmlScene.GetFirstNodeByName(exportName) if exportName else None
 
         if not outputModel:
-            slicer.util.errorDisplay("Please select an Output Model first.")
-            return
-        if not directory:
-            slicer.util.errorDisplay("Please select a save directory.")
+            slicer.util.errorDisplay("Please select a model to export.")
             return
 
-        baseFileName = outputModel.GetName()
+        directory = str(self.ui.DirectoryButton.directory).strip()
+
+        if not directory:
+            slicer.util.errorDisplay("Please select a valid export folder before exporting.")
+            return
+
+        baseFileName = outputModel.GetName()  # Ensure target directory exists; creates it if necessary
+
+        # All voxelized models go directly into the chosen folder.
+        os.makedirs(directory, exist_ok=True)
+
         paths = {
             "VTK": os.path.join(directory, f"{baseFileName}.vtk"),
             "STL": os.path.join(directory, f"{baseFileName}.stl"),
             "MSH": os.path.join(directory, f"{baseFileName}.msh"),
+            "OBJ": os.path.join(directory, f"{baseFileName}.obj"),
         }
 
         selectedFormat = self.ui.exportFormatCombo.currentText
-
         if selectedFormat not in paths:
             slicer.util.errorDisplay(f"Unknown export format: {selectedFormat}")
             return
@@ -266,11 +843,10 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 "VTK": self.logic.exportModelVTK,
                 "STL": self.logic.exportModelSTL,
                 "MSH": self.logic.exportModelMSH,
+                "OBJ": self.logic.exportModelOBJ,
             }
-            export_func = export_map[selectedFormat]
-            export_func(outputModel, paths[selectedFormat])
-
-            self.setInfoLabel(f"Model saved to:{paths[selectedFormat]}")
+            export_map[selectedFormat](outputModel, paths[selectedFormat])
+            self.setInfoLabel(f"Model saved to: {paths[selectedFormat]}")
 
 
 #
@@ -279,75 +855,287 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 class VoxelizationLogic(ScriptedLoadableModuleLogic):
-    """This class implements all the actual
-    computation done by the module: Scaling the model, voxelizing the model and exporting it to files.
-    Uses ScriptedLoadableModuleLogic base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
-    """
 
     def __init__(self) -> None:
-        """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
 
     def getParameterNode(self):
         return VoxelizationParameterNode(super().getParameterNode())
 
-    
-    def voxelizeModelToModel(self, 
-                            inputVolume: vtkMRMLScalarVolumeNode,
-                            inputModel: vtkMRMLModelNode, 
-                            outputModel: vtkMRMLModelNode, 
-                            pitch: float, 
-                            ui=None,) -> None:
+    # ------------------------------------------------------------------
+    # Core voxelization (unchanged from original)
+    # ------------------------------------------------------------------
 
-        from VoxelizationLib.logicUtils import rasterizeModelToVolume, getVoxelizedModel, displayVoxelizedModel, computeMetrics
+    def voxelizeModelToModel(self,
+                             inputVolume: vtkMRMLScalarVolumeNode,
+                             inputModel: vtkMRMLModelNode,
+                             outputModel: vtkMRMLModelNode,
+                             pitch: float,
+                             threshold: float,
+                             ui=None) -> None:
+
+        from VoxelizationLib.logicUtils import (
+            rasterizeModelToVolume, getVoxelizedModel,
+            displayVoxelizedModel, computeMetrics, computeIntensityStats,
+        )
         from numpy import count_nonzero
-        
+
         if not inputVolume:
             raise ValueError("Invalid input volume")
-        
         if not inputModel:
             raise ValueError("Invalid input model")
-        
         if not outputModel:
             raise ValueError("Invalid output model")
-        
-        mask_orig = rasterizeModelToVolume(inputModel, inputVolume)
+
+        mask_orig          = rasterizeModelToVolume(inputModel, inputVolume)  # Step 1: rasterize original mesh to count occupied voxels
         originalVoxelCount = int(count_nonzero(mask_orig))
-        grid_original = mask_orig != 0
+        grid_original      = mask_orig != 0  # Boolean occupancy grid for metric computation
 
-        voxelizedModel = getVoxelizedModel(inputModel, pitch, outputModel)
+        # Step 2: build the voxelized mesh; also returns excluded voxel occupancy percentages
+        voxelizedModel, excludedOccupancy = getVoxelizedModel(inputModel, pitch, outputModel, threshold)
+        displayVoxelizedModel(voxelizedModel)  # Attach a display node so the result appears in the 3D view
 
-        displayVoxelizedModel(voxelizedModel)
+        mask                 = rasterizeModelToVolume(voxelizedModel, inputVolume)  # Step 3: rasterize the voxelized mesh for comparison
+        voxelizedVoxelCount  = int(count_nonzero(mask))
+        grid_voxelized       = mask != 0
 
+        if ui:  # Step 5: compute and return metric values
+            from VoxelizationLib.logicUtils import computeVolumeCm3, computeIntensityStats
+            originalVolCm3  = computeVolumeCm3(inputModel)
+            voxelizedVolCm3 = computeVolumeCm3(voxelizedModel)
 
-        mask = rasterizeModelToVolume(voxelizedModel, inputVolume)
-        voxelizedVoxelCount = int(count_nonzero(mask))
-        grid_voxelized = mask != 0
+            metrics = computeMetrics(grid_original, grid_voxelized, originalVoxelCount, voxelizedVoxelCount, originalVolCm3, voxelizedVolCm3)
+            stats   = computeIntensityStats(excludedOccupancy)
 
-        metrics = computeMetrics(grid_original, grid_voxelized, originalVoxelCount, voxelizedVoxelCount)
-        
-        dice = metrics["dice"]
-        iou = metrics["iou"]
-        deltaV = metrics["deltaV"]
-        
-        if ui:
-            ui.voxelCountOriginal.setText(f"{originalVoxelCount}")
-            ui.voxelCountNew.setText(f"{voxelizedVoxelCount}")
-            ui.diceScore.setText(f"{dice:.6f}")
-            ui.iouScore.setText(f"{iou:.6f}")
-            ui.deltaV.setText(f"{deltaV:.6f}")
+            metricsValues = {
+                "volOriginal":  f"{originalVolCm3:.4f}",
+                "volVoxelized": f"{voxelizedVolCm3:.4f}",
+                "deltaVCm3":    f"{metrics['deltaVCm3']:.4f}",
+                "deltaVPct":    f"{metrics['deltaV']:.4f}",
+                "meanStd":      f"{stats['mean']:.2f}% \u00b1 {stats['std']:.2f}%",
+                "medianIqr":    f"{stats['median']:.2f}% [{stats['p5']:.2f}% \u2013 {stats['p95']:.2f}%]",
+            }
+
             slicer.app.processEvents()
-        
+            return metricsValues
+
+    # ------------------------------------------------------------------
+    # Segmentation → Model  (accepts a specific segmentId)
+    # ------------------------------------------------------------------
+
+    def segmentationToModel(self, segmentationNode: vtkMRMLSegmentationNode, segmentId: str):
+        """
+        Export exactly one segment (identified by segmentId) from
+        segmentationNode into a temporary vtkMRMLModelNode and return it.
+
+        Supports Slicer 5.x (ExportSingleSegmentToModelNode) and older
+        versions via ExportVisibleSegmentsToModels.
+        """
+        tempModel = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "TempSegmentModel")
+        segLogic  = slicer.modules.segmentations.logic()
+
+        # ---- Modern Slicer 5.x API ----
+        if hasattr(segLogic, "ExportSingleSegmentToModelNode"):
+            segLogic.ExportSingleSegmentToModelNode(segmentationNode, segmentId, tempModel)
+            return tempModel
+
+        # ---- Fallback: hide all segments except the chosen one ----
+        segmentation = segmentationNode.GetSegmentation()
+        displayNode  = segmentationNode.GetDisplayNode()
+
+        visibilityMap = {}
+        for i in range(segmentation.GetNumberOfSegments()):  # Save per-segment visibility so we can restore it afterward
+            sid = segmentation.GetNthSegmentID(i)
+            visibilityMap[sid] = displayNode.GetSegmentVisibility(sid)
+            displayNode.SetSegmentVisibility(sid, sid == segmentId)  # Show only the desired segment, hide all others temporarily
+
+        shNode       = slicer.mrmlScene.GetSubjectHierarchyNode()
+        folderItemId = shNode.CreateFolderItem(shNode.GetSceneItemID(), "TempSegModels")  # Temporary SH folder captures the exported model nodes
+
+        try:
+            segLogic.ExportVisibleSegmentsToModels(segmentationNode, folderItemId)
+
+            children = vtk.vtkIdList()
+            shNode.GetItemChildren(folderItemId, children)
+
+            if children.GetNumberOfIds() == 0:
+                raise RuntimeError("No model was created from the selected segment.")
+
+            exportedNode = shNode.GetItemDataNode(children.GetId(0))  # Copy polydata into our persistent node
+            tempModel.SetAndObservePolyData(exportedNode.GetPolyData())
+            slicer.mrmlScene.RemoveNode(exportedNode)  # Remove the intermediate exported node
+
+        finally:
+            # Restore visibility even if export raised an exception  # Always restore visibility - even when an exception was raised
+            for sid, vis in visibilityMap.items():
+                displayNode.SetSegmentVisibility(sid, vis)
+            shNode.RemoveItem(folderItemId)  # Clean up the temporary Subject Hierarchy folder
+
+        return tempModel
+
+    # ------------------------------------------------------------------
+    # Export helpers  (self was missing on STL/MSH in the original — fixed)
+    # ------------------------------------------------------------------
+
+    def exportModelOBJ(self, modelNode, filePath):
+        """Export modelNode as a Wavefront OBJ file (.obj)."""
+        from VoxelizationLib.logicUtils import exportModelOBJ
+        exportModelOBJ(modelNode, filePath)
 
     def exportModelVTK(self, modelNode, filePath):
         from VoxelizationLib.logicUtils import exportModelVTK
         exportModelVTK(modelNode, filePath)
 
-    def exportModelSTL(modelNode, filePath):
+    def exportModelSTL(self, modelNode, filePath):
         from VoxelizationLib.logicUtils import exportModelSTL
         exportModelSTL(modelNode, filePath)
-        
-    def exportModelMSH(modelNode, filePath):
+
+    def exportModelMSH(self, modelNode, filePath):
         from VoxelizationLib.logicUtils import exportModelMSH
         exportModelMSH(modelNode, filePath)
+
+    # ------------------------------------------------------------------
+    # Subject Hierarchy folder helper
+    # ------------------------------------------------------------------
+
+    def moveNodeToFolder(self, modelNode, folderName: str):
+        """
+        Move modelNode into a Subject Hierarchy folder called folderName.
+        The folder is created once and reused on every subsequent call,
+        so all voxelized results are grouped together in one place.
+        """
+        shNode   = slicer.mrmlScene.GetSubjectHierarchyNode()
+        sceneId  = shNode.GetSceneItemID()
+
+        folderId = shNode.GetItemChildWithName(sceneId, folderName)
+        if folderId == 0:
+            folderId = shNode.CreateFolderItem(sceneId, folderName)
+
+        nodeItemId = shNode.GetItemByDataNode(modelNode)
+        shNode.SetItemParent(nodeItemId, folderId)
+
+    # ------------------------------------------------------------------
+    # Boolean operations
+    # ------------------------------------------------------------------
+
+    def applyBooleanOperation(self, nodeA, nodeB, operation: str, outputName: str):
+        """
+        Perform a boolean operation between two voxelized model nodes.
+
+        Approach
+        --------
+        1. Voxelize each model independently with trimesh (same method used
+           in getVoxelizedModel) to get their filled voxel center sets.
+        2. Snap both sets of centers onto a single common grid so indices
+           are perfectly aligned.
+        3. Apply the boolean op on the two index sets (set union, intersection,
+           difference).
+        4. Convert the result back to a surface mesh via trimesh as_boxes().
+
+        This avoids all false-positive issues from point-in-mesh testing on
+        voxelized surfaces.
+        """
+        import trimesh
+        import numpy as np
+        from numpy import hstack, full, int64
+
+        def polyDataToTrimesh(polyData):
+            pts   = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
+            cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
+            faces = cells.reshape(-1, 4)[:, 1:]
+            return trimesh.Trimesh(vertices=pts, faces=faces, process=False)
+
+        meshA = polyDataToTrimesh(nodeA.GetPolyData())
+        meshB = polyDataToTrimesh(nodeB.GetPolyData())
+
+        # Step 1 — estimate pitch from model A (median edge length)
+        edgeLengths = np.linalg.norm(
+            meshA.vertices[meshA.edges[:, 0]] - meshA.vertices[meshA.edges[:, 1]],
+            axis=1
+        )
+        pitch = float(np.median(edgeLengths[edgeLengths > 0]))
+
+        # Step 2 — voxelize both meshes independently (filled)
+        voxA = meshA.voxelized(pitch=pitch).fill()
+        voxB = meshB.voxelized(pitch=pitch).fill()
+
+        centersA = voxA.points  # (NA, 3) world coords of filled voxel centers
+        centersB = voxB.points  # (NB, 3)
+
+        # Step 3 — define a common grid origin from the combined bounding box
+        # Round origin to nearest pitch multiple so both grids snap cleanly
+        allCenters = np.vstack([centersA, centersB])
+        origin     = np.floor(allCenters.min(axis=0) / pitch) * pitch
+
+        # Step 4 — convert world centers to integer grid indices
+        # index = round((center - origin) / pitch)
+        def toIndices(centers):
+            return np.round((centers - origin) / pitch).astype(int)
+
+        idxA = toIndices(centersA)  # (NA, 3)
+        idxB = toIndices(centersB)  # (NB, 3)
+
+        # Step 5 — represent each set as a set of tuples for fast set operations
+        setA = set(map(tuple, idxA))
+        setB = set(map(tuple, idxB))
+
+        if operation == "union":
+            resultSet = setA | setB
+        elif operation == "intersection":
+            resultSet = setA & setB
+        elif operation == "difference":
+            resultSet = setA - setB
+        elif operation == "difference_ba":
+            resultSet = setB - setA
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
+
+        if not resultSet:
+            raise ValueError(
+                "Boolean operation produced an empty result. "
+                "For Intersection/Difference make sure the models overlap."
+            )
+
+        # Step 6 — convert result index set back to a dense boolean matrix
+        resultIndices = np.array(list(resultSet))  # (M, 3)
+        dims          = resultIndices.max(axis=0) - resultIndices.min(axis=0) + 1
+        offset        = resultIndices.min(axis=0)
+        localIdx      = resultIndices - offset
+
+        denseMatrix   = np.zeros(dims, dtype=bool)
+        denseMatrix[localIdx[:, 0], localIdx[:, 1], localIdx[:, 2]] = True
+
+        # Step 7 — build trimesh VoxelGrid with correct transform
+        # The transform maps grid index (i,j,k) → world center of that voxel
+        worldOrigin    = origin + offset * pitch
+        transform      = np.eye(4) * pitch
+        transform[0,3] = worldOrigin[0]
+        transform[1,3] = worldOrigin[1]
+        transform[2,3] = worldOrigin[2]
+        transform[3,3] = 1.0
+
+        resultGrid = trimesh.voxel.VoxelGrid(
+            trimesh.voxel.encoding.DenseEncoding(denseMatrix),
+            transform
+        )
+        surface = resultGrid.as_boxes()
+
+        # Step 8 — convert trimesh surface to VTK polydata
+        v_out        = surface.vertices
+        f_out        = surface.faces
+        out_poly     = vtk.vtkPolyData()
+        v_vtk        = vtk.util.numpy_support.numpy_to_vtk(v_out, deep=True)
+        pts          = vtk.vtkPoints()
+        pts.SetData(v_vtk)
+        out_poly.SetPoints(pts)
+        num_faces    = f_out.shape[0]
+        cells_array  = hstack([full((num_faces, 1), 3), f_out]).astype(int64)
+        cells_vtk    = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array, deep=True)
+        connectivity = vtk.vtkCellArray()
+        connectivity.SetCells(num_faces, cells_vtk)
+        out_poly.SetPolys(connectivity)
+
+        resultNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", outputName)
+        resultNode.SetAndObservePolyData(out_poly)
+
+        return resultNode
