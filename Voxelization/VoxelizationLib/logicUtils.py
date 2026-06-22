@@ -3,11 +3,9 @@ import vtk.util.numpy_support as vtk_np
 
 def exportModelOBJ(modelNode, filePath):
     """
-    Writes the polydata to a Wavefront OBJ file compatible with Gmsh.
-    Written manually to avoid comment lines (#) that Gmsh 4.x cannot parse.
+    Writes the polydata to a Wavefront OBJ file compatible with Gmsh 4.x.
+    Uses plain ASCII with no comment lines, no headers, no mtl references.
     """
-    import numpy as np
-
     if not modelNode or not modelNode.GetPolyData() or modelNode.GetPolyData().GetNumberOfPoints() == 0:
         raise ValueError("Output model has no geometry. Run voxelization first.")
 
@@ -22,15 +20,62 @@ def exportModelOBJ(modelNode, filePath):
     cell_array = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
     triangles  = cell_array.reshape(n_cells, 4)[:, 1:]
 
-    with open(filePath, 'w') as f:
-        # Vertices — no comment lines
-        for p in points:
-            f.write(f"v {p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
-        # Faces — OBJ indices are 1-based
-        for t in triangles:
-            f.write(f"f {t[0]+1} {t[1]+1} {t[2]+1}\n")
+    lines = []
+    for p in points:
+        lines.append("v " + str(float(p[0])) + " " + str(float(p[1])) + " " + str(float(p[2])))
+    for t in triangles:
+        lines.append("f " + str(int(t[0])+1) + " " + str(int(t[1])+1) + " " + str(int(t[2])+1))
+
+    with open(filePath, 'w', newline='\n') as f:
+        f.write('\n'.join(lines) + '\n')
 
     print(f"OBJ saved to {filePath}")
+
+
+def exportModelPLY(modelNode, filePath):
+    """
+    Writes the polydata to a PLY file.
+    PLY is widely supported by MeshLab, CloudCompare, Blender, open3d.
+    """
+    if not modelNode or not modelNode.GetPolyData() or modelNode.GetPolyData().GetNumberOfPoints() == 0:
+        raise ValueError("Output model has no geometry. Run voxelization first.")
+
+    writer = vtk.vtkPLYWriter()
+    writer.SetFileName(filePath)
+    writer.SetInputData(modelNode.GetPolyData())
+    writer.SetFileTypeToBinary()
+    writer.Write()
+    print(f"PLY saved to {filePath}")
+
+
+def exportModelOFF(modelNode, filePath):
+    """
+    Writes the polydata to an OFF (Object File Format) file.
+    OFF is supported by MeshLab, many geometry processing research tools.
+    Written manually — no extra dependency needed.
+    """
+    if not modelNode or not modelNode.GetPolyData() or modelNode.GetPolyData().GetNumberOfPoints() == 0:
+        raise ValueError("Output model has no geometry. Run voxelization first.")
+
+    triangulate = vtk.vtkTriangleFilter()
+    triangulate.SetInputData(modelNode.GetPolyData())
+    triangulate.Update()
+    polyData = triangulate.GetOutput()
+
+    points     = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
+    n_cells    = polyData.GetPolys().GetNumberOfCells()
+    cell_array = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
+    triangles  = cell_array.reshape(n_cells, 4)[:, 1:]
+
+    with open(filePath, 'w', newline='\n') as f:
+        f.write("OFF\n")
+        f.write(f"{len(points)} {n_cells} 0\n")
+        for p in points:
+            f.write(str(float(p[0])) + " " + str(float(p[1])) + " " + str(float(p[2])) + "\n")
+        for t in triangles:
+            f.write("3 " + str(int(t[0])) + " " + str(int(t[1])) + " " + str(int(t[2])) + "\n")
+
+    print(f"OFF saved to {filePath}")
 
 
 def exportModelVTK(modelNode, filePath):
@@ -318,9 +363,11 @@ def _emptyStats():
     
 def displayVoxelizedModel(voxelizedModel) -> None:
     if not voxelizedModel.GetDisplayNode():
-            voxelizedModel.CreateDefaultDisplayNodes()
-
-    voxelizedModel.GetDisplayNode().SetVisibility(True)
+        voxelizedModel.CreateDefaultDisplayNodes()
+    dn = voxelizedModel.GetDisplayNode()
+    dn.SetVisibility(True)
+    dn.SetOpacity(1.0)
+    voxelizedModel.SetAttribute("Terminologies.TerminologyEntry", "")
     voxelizedModel.GetPolyData().Modified()
     
 def computeVolumeCm3(modelNode) -> float:
@@ -351,7 +398,7 @@ def computeMetrics(grid_original, grid_voxelized, originalVoxelCount, voxelizedV
     # DeltaV percentage — relative volume difference
     deltaVPct = (abs(voxelizedVoxelCount - originalVoxelCount) / originalVoxelCount) * 100 if originalVoxelCount > 0 else 0.0
 
-    # DeltaV in cm3 — absolute volume difference
+    # DeltaV in cm³ — absolute volume difference
     deltaVCm3 = abs(voxelizedVolCm3 - originalVolCm3)
 
     return {

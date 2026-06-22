@@ -78,7 +78,7 @@ class VoxelizationParameterNode:
     inputVolume: vtkMRMLScalarVolumeNode
     inputModel: vtkMRMLModelNode
     inputSegmentation: vtkMRMLSegmentationNode
-    pitch: Annotated[float, WithinRange(0.1, 5.0), Default(0.5)]
+    pitch: Annotated[float, WithinRange(0.1, 1000.0), Default(0.5)]
     threshold: Annotated[float, WithinRange(0.0, 1.0), Default(0.5)]
     outputModel: vtkMRMLModelNode
 
@@ -104,7 +104,10 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.requiredDeps = ["trimesh", "meshio", "rtree"]  # Python packages required at runtime
         self._segmentationObserverTag = None  # VTK observer tag on the currently watched segmentation node
         self._observedSegmentationNode = None  # Reference to the segmentation node being observed
-        self._lastOutputNode = None  # Last voxelized output node — used for export
+        self._lastOutputNode    = None  # Last voxelized output node — used for export
+        self._pendingOutputNode = None  # Node created via + button but not yet voxelized
+        self._pendingOutputName = None  # Name captured from + button before node was deleted
+        self._lastVoxName       = None  # voxName of the last voxelization — used to detect re-runs
         self._metricsStore   = {}    # {modelName: {metricKey: value}} — persists metrics per model
 
     # ------------------------------------------------------------------
@@ -158,6 +161,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # When user picks a different segmentation node → refresh segment list
         self.ui.inputSegmentationSelector.currentNodeChanged.connect(self.onSegmentationNodeChanged)  # Rebuild the segment list whenever the user picks a different segmentation node
+        self.ui.inputVolumeSelector.currentNodeChanged.connect(self._updateResolutionLabel)
 
         # Update the output name preview whenever the input selection changes
         self.ui.inputSegmentSelector.currentIndexChanged.connect(self._updateOutputNamePreview)
@@ -166,8 +170,10 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Action buttons
         self.ui.voxelButton.connect("clicked(bool)", self.onVoxelButton)
         self.ui.exportToFileButton.connect("clicked(bool)", self.onExportButton)
+        self.ui.outputSelectorModel.currentNodeChanged.connect(self._onOutputSelectorChanged)
         self.ui.exportMetricsButton.connect("clicked(bool)", self.onExportMetricsButton)
         self.ui.metricsModelCombo.currentIndexChanged.connect(self._onMetricsModelChanged)
+        self.ui.pitchMaxSpinBox.valueChanged.connect(self._onPitchMaxChanged)
 
         # Initialise the metrics table with row labels
         self._initMetricsTable()
@@ -188,16 +194,85 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self._updateInputVisibility()
 
         self.initializeParameterNode()
+
+        # Enforce pitch max on slider after full UI init
+        try:
+            self.ui.pitchWidget.maximum = float(self.ui.pitchMaxSpinBox.value)
+        except Exception:
+            pass
+
         self.checkDependencies()
 
     # ------------------------------------------------------------------
     # Input-type toggle
     # ------------------------------------------------------------------
 
+    def _onOutputSelectorChanged(self, node):
+        """
+        Called when the output selector changes.
+        If a new empty node was created via the + button, track it as
+        pending. Do NOT delete it — the user may have named it intentionally.
+        """
+        if node and node.GetPolyData() and node.GetPolyData().GetNumberOfPoints() == 0:
+            self._pendingOutputNode = node
+            self._pendingOutputName = node.GetName()
+        else:
+            # User selected an existing node with data — clear pending
+            if node and node != self._pendingOutputNode:
+                self._pendingOutputNode = None
+                self._pendingOutputName = None
+
+    def _cleanupPendingOutputNode(self):
+        """Remove the pending empty output node if it was never voxelized."""
+        if self._pendingOutputNode:
+            try:
+                node = self._pendingOutputNode
+                # Only remove if still empty (never voxelized)
+                if node and node.GetPolyData() and node.GetPolyData().GetNumberOfPoints() == 0:
+                    slicer.mrmlScene.RemoveNode(node)
+            except Exception:
+                pass
+            self._pendingOutputNode = None
+            self._pendingOutputName = None
+        """Called whenever the Model/Segmentation radio changes."""
+        self._updateInputVisibility()
+        self._checkCanApply()
+
+    def _updateResolutionLabel(self, node=None):
+        """
+        Show the voxel spacing of the selected input volume as X × Y × Z mm.
+        Called whenever the user picks a different volume node.
+        """
+        if node is None:
+            node = self.ui.inputVolumeSelector.currentNode()
+
+        if not node:
+            self.ui.resolutionValueLabel.setText("—")
+            return
+
+        spacing = node.GetSpacing()  # returns (x, y, z) in mm
+        self.ui.resolutionValueLabel.setText(
+            f"{spacing[0]:.3f} × {spacing[1]:.3f} × {spacing[2]:.3f}"
+        )
+        """Called whenever the Model/Segmentation radio changes."""
+        self._updateInputVisibility()
+        self._checkCanApply()
+
     def onInputTypeToggled(self, modelChecked):
         """Called whenever the Model/Segmentation radio changes."""
         self._updateInputVisibility()
         self._checkCanApply()
+
+    def _onPitchMaxChanged(self, value):
+        """
+        Update the pitch slider maximum when the user changes the spinbox.
+        """
+        self.ui.pitchWidget.maximum    = value
+        self.ui.pitchWidget.singleStep = max(0.05, round(value * 0.05, 2))
+        # Clamp current value if it exceeds the new max
+        currentVal = self.ui.pitchWidget.value
+        if currentVal > value:
+            self.ui.pitchWidget.value = value
 
     def _updateInputVisibility(self):
         """Show Model row OR Segmentation + Segment rows — never both."""
@@ -285,7 +360,17 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             uniqueName = f"{baseName}_{counter}"
             counter   += 1
 
-        # Clear any stale output node and show predicted name as info text only
+        # Clean up any pending empty node from a previous + click
+        self._cleanupPendingOutputNode()
+        # Reset last vox name so a new node is created for this input
+        self._lastVoxName       = None
+        self._pendingOutputName = None
+
+        # Clear any stale output node
+        currentNode = self.ui.outputSelectorModel.currentNode()
+        if currentNode and currentNode.GetPolyData() and currentNode.GetPolyData().GetNumberOfPoints() == 0:
+            slicer.mrmlScene.RemoveNode(currentNode)
+
         self.ui.outputSelectorModel.setCurrentNode(None)
         self._lastOutputNode = None
         self.setInfoLabel(f"Output will be: {uniqueName}")
@@ -313,6 +398,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # ------------------------------------------------------------------
 
     def cleanup(self) -> None:
+        self._cleanupPendingOutputNode()
         if self._observedSegmentationNode and self._segmentationObserverTag:
             self._observedSegmentationNode.GetSegmentation().RemoveObserver(
                 self._segmentationObserverTag
@@ -343,6 +429,9 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if firstVolume:
                 self._parameterNode.inputVolume = firstVolume
 
+        # Update resolution display for the auto-selected volume
+        self._updateResolutionLabel()
+
         # Clear any leftover output so the selector always starts empty.  # Output node is created on Apply - intentionally left empty here
         if self._parameterNode:
             self._parameterNode.outputModel = None
@@ -354,9 +443,14 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self._parameterNode = inputParameterNode
         if self._parameterNode:
-            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)  # connectGui() binds widgets whose 'SlicerParameterName' property matches a field
+            self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
             self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
             self._checkCanApply()
+            # connectGui sets slider max from WithinRange — override with spinbox value
+            try:
+                self.ui.pitchWidget.maximum = float(self.ui.pitchMaxSpinBox.value)
+            except Exception:
+                pass
 
     def setInfoLabel(self, text):
         self.ui.infoLabel.setText(text)
@@ -406,6 +500,8 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             # Clear previous output so the selector doesn't carry a stale node
             self._parameterNode.outputModel = None
+            # Reset pending tracker since Apply is now running
+            self._pendingOutputNode = None
 
             inputVolume = self.ui.inputVolumeSelector.currentNode()
             pitch       = float(self.ui.pitchWidget.value)
@@ -452,14 +548,64 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 tempMesh  = inputMesh   # remember so we can remove it afterward  # Keep reference so we can remove it after voxelization
                 voxName   = f"{segmentName}_vox"
 
-            # Create the output node with the correct unique name
-            uniqueName = voxName
-            counter    = 1
-            while slicer.mrmlScene.GetFirstNodeByName(uniqueName):
-                uniqueName = f"{voxName}_{counter}"
-                counter   += 1
+            # Determine the output node to use:
+            existingNode = self.ui.outputSelectorModel.currentNode()
 
-            outputModel = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", uniqueName)
+            def hasGeometry(node):
+                if not node:
+                    return False
+                pd = node.GetPolyData()
+                return pd is not None and pd.GetNumberOfPoints() > 0
+
+            def makeUniqueName(baseName, excludeNode=None):
+                name    = baseName
+                counter = 1
+                while True:
+                    conflict = slicer.mrmlScene.GetFirstNodeByName(name)
+                    if not conflict or (excludeNode and conflict.GetID() == excludeNode.GetID()):
+                        break
+                    name = f"{baseName}_{counter}"
+                    counter += 1
+                return name
+
+            if existingNode:
+                # User has selected a node — always use it regardless of content
+                existingName = existingNode.GetName()
+                if not existingName.endswith("_vox"):
+                    uniqueName = makeUniqueName(f"{existingName}_vox", existingNode)
+                    existingNode.SetName(uniqueName)
+                else:
+                    uniqueName = existingName
+                outputModel = existingNode
+                self._pendingOutputNode = None
+
+            elif self._lastOutputNode and self._lastVoxName == voxName:
+                # Same input as last run — overwrite
+                outputModel = self._lastOutputNode
+                uniqueName  = outputModel.GetName()
+
+            else:
+                # No node selected — create fresh
+                uniqueName  = makeUniqueName(voxName)
+                outputModel = self.logic._initModelNode(uniqueName)
+
+            self._lastVoxName = voxName
+
+            # If user typed a custom name via +, use that instead
+            if self._pendingOutputName:
+                customName = self._pendingOutputName
+                if not customName.endswith("_vox"):
+                    customName = f"{customName}_vox"
+                # Check uniqueness
+                counter = 1
+                baseName = customName
+                while slicer.mrmlScene.GetFirstNodeByName(customName):
+                    customName = f"{baseName}_{counter}"
+                    counter   += 1
+                outputModel.SetName(customName)
+                uniqueName = customName
+                self._pendingOutputName = None
+
             self._parameterNode.outputModel = outputModel
 
             metricsValues = self.logic.voxelizeModelToModel(inputVolume, inputMesh, outputModel, pitch, threshold, self.ui)
@@ -675,16 +821,23 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             # Build unique output name e.g. "ModelA_U_ModelB"
             baseName   = f"{nameA}_{opSymbol}_{nameB}"
-            uniqueName = baseName
-            counter    = 1
-            while slicer.mrmlScene.GetFirstNodeByName(uniqueName):
-                uniqueName = f"{baseName}_{counter}"
-                counter   += 1
+
+            # Use the node already in the selector if the user created/selected one
+            existingNode = self.ui.booleanOutputSelector.currentNode()
+            if existingNode:
+                uniqueName = existingNode.GetName()
+                # Delete existing node — logic will create a new one with correct data
+                slicer.mrmlScene.RemoveNode(existingNode)
+                self.ui.booleanOutputSelector.setCurrentNode(None)
+            else:
+                uniqueName = baseName
+                counter    = 1
+                while slicer.mrmlScene.GetFirstNodeByName(uniqueName):
+                    uniqueName = f"{baseName}_{counter}"
+                    counter   += 1
 
             resultNode = self.logic.applyBooleanOperation(nodeA, nodeB, opKey, uniqueName)
             self.logic.moveNodeToFolder(resultNode, "VoxelizedModels")
-            resultNode.CreateDefaultDisplayNodes()
-            resultNode.GetDisplayNode().SetVisibility(True)
 
             # Show result in the boolean output selector
             self.ui.booleanOutputSelector.setCurrentNode(resultNode)
@@ -702,9 +855,9 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # Row definitions: (row index, label text, internal key)
     _METRIC_ROWS = [
-        (0, "Volume original [cm3]",        "volOriginal"),
-        (1, "Volume voxelized [cm3]",       "volVoxelized"),
-        (2, "ΔV [cm3]",                     "deltaVCm3"),
+        (0, "Volume original [cm³]",        "volOriginal"),
+        (1, "Volume voxelized [cm³]",       "volVoxelized"),
+        (2, "ΔV [cm³]",                     "deltaVCm3"),
         (3, "ΔV [%]",                       "deltaVPct"),
         (4, "Excluded Mean ± Std",          "meanStd"),
         (5, "Excluded Median [IQR 5%-95%]", "medianIqr"),
@@ -829,8 +982,10 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         paths = {
             "VTK": os.path.join(directory, f"{baseFileName}.vtk"),
             "STL": os.path.join(directory, f"{baseFileName}.stl"),
-            "MSH": os.path.join(directory, f"{baseFileName}.msh"),
             "OBJ": os.path.join(directory, f"{baseFileName}.obj"),
+            "MSH": os.path.join(directory, f"{baseFileName}.msh"),
+            "PLY": os.path.join(directory, f"{baseFileName}.ply"),
+            "OFF": os.path.join(directory, f"{baseFileName}.off"),
         }
 
         selectedFormat = self.ui.exportFormatCombo.currentText
@@ -842,8 +997,10 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             export_map = {
                 "VTK": self.logic.exportModelVTK,
                 "STL": self.logic.exportModelSTL,
-                "MSH": self.logic.exportModelMSH,
                 "OBJ": self.logic.exportModelOBJ,
+                "MSH": self.logic.exportModelMSH,
+                "PLY": self.logic.exportModelPLY,
+                "OFF": self.logic.exportModelOFF,
             }
             export_map[selectedFormat](outputModel, paths[selectedFormat])
             self.setInfoLabel(f"Model saved to: {paths[selectedFormat]}")
@@ -861,6 +1018,19 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
     def getParameterNode(self):
         return VoxelizationParameterNode(super().getParameterNode())
+
+    def _initModelNode(self, name: str):
+        """
+        Create a vtkMRMLModelNode with proper display node initialization.
+        """
+        node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", name)
+        node.CreateDefaultDisplayNodes()
+        dn = node.GetDisplayNode()
+        dn.SetVisibility(True)
+        dn.SetOpacity(1.0)
+        dn.SetRepresentation(dn.SurfaceRepresentation)  # solid surface, not wireframe
+        node.SetAttribute("Terminologies.TerminologyEntry", "")
+        return node
 
     # ------------------------------------------------------------------
     # Core voxelization (unchanged from original)
@@ -932,6 +1102,7 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         versions via ExportVisibleSegmentsToModels.
         """
         tempModel = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", "TempSegmentModel")
+        tempModel.CreateDefaultDisplayNodes()
         segLogic  = slicer.modules.segmentations.logic()
 
         # ---- Modern Slicer 5.x API ----
@@ -982,6 +1153,16 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         from VoxelizationLib.logicUtils import exportModelOBJ
         exportModelOBJ(modelNode, filePath)
 
+    def exportModelPLY(self, modelNode, filePath):
+        """Export modelNode as a PLY binary file (.ply)."""
+        from VoxelizationLib.logicUtils import exportModelPLY
+        exportModelPLY(modelNode, filePath)
+
+    def exportModelOFF(self, modelNode, filePath):
+        """Export modelNode as an OFF file (.off)."""
+        from VoxelizationLib.logicUtils import exportModelOFF
+        exportModelOFF(modelNode, filePath)
+
     def exportModelVTK(self, modelNode, filePath):
         from VoxelizationLib.logicUtils import exportModelVTK
         exportModelVTK(modelNode, filePath)
@@ -1020,64 +1201,127 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
     def applyBooleanOperation(self, nodeA, nodeB, operation: str, outputName: str):
         """
-        Perform a boolean operation between two voxelized model nodes.
+        Boolean operation between two voxelized model nodes.
 
-        Approach
-        --------
-        1. Voxelize each model independently with trimesh (same method used
-           in getVoxelizedModel) to get their filled voxel center sets.
-        2. Snap both sets of centers onto a single common grid so indices
-           are perfectly aligned.
-        3. Apply the boolean op on the two index sets (set union, intersection,
-           difference).
-        4. Convert the result back to a surface mesh via trimesh as_boxes().
-
-        This avoids all false-positive issues from point-in-mesh testing on
-        voxelized surfaces.
+        Extract voxel centers directly from the existing polydata using
+        face normals (center = face_centroid - snapped_normal * pitch/2),
+        then snap both sets of centers to a common grid using
+        floor((center - origin) / pitch) for alignment.
         """
         import trimesh
         import numpy as np
         from numpy import hstack, full, int64
 
-        def polyDataToTrimesh(polyData):
-            pts   = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
+        def extractCentersAndPitch(polyData):
+            """
+            Extract voxel centers and pitch from a voxelized polydata.
+            Uses face (min+max)/2 as the face center — NOT the triangle centroid
+            which is at 1/3 from vertices and gives wrong results.
+            center = face_center - snapped_normal * pitch/2
+            """
+            pts   = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData()).astype(np.float64)
             cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
-            faces = cells.reshape(-1, 4)[:, 1:]
-            return trimesh.Trimesh(vertices=pts, faces=faces, process=False)
+            tris  = cells.reshape(-1, 4)[:, 1:]
 
-        meshA = polyDataToTrimesh(nodeA.GetPolyData())
-        meshB = polyDataToTrimesh(nodeB.GetPolyData())
+            v0 = pts[tris[:,0]]
+            v1 = pts[tris[:,1]]
+            v2 = pts[tris[:,2]]
 
-        # Step 1 — estimate pitch from model A (median edge length)
-        edgeLengths = np.linalg.norm(
-            meshA.vertices[meshA.edges[:, 0]] - meshA.vertices[meshA.edges[:, 1]],
-            axis=1
-        )
-        pitch = float(np.median(edgeLengths[edgeLengths > 0]))
+            # Face center = (min+max)/2 per axis over triangle vertices
+            # This correctly gives the square face center for both triangles
+            # of a split quad face
+            face_min     = np.minimum(np.minimum(v0, v1), v2)
+            face_max     = np.maximum(np.maximum(v0, v1), v2)
+            face_centers = (face_min + face_max) / 2.0
 
-        # Step 2 — voxelize both meshes independently (filled)
-        voxA = meshA.voxelized(pitch=pitch).fill()
-        voxB = meshB.voxelized(pitch=pitch).fill()
+            # Estimate pitch from VERTEX x-spacings (not face centers)
+            # Cube vertices are at cx ± pitch/2 → adjacent cubes share corners
+            # so min diff between unique vertex x-coords = pitch
+            uniqueXv = np.unique(np.round(pts[:,0], 4))
+            diffsv   = np.diff(uniqueXv)
+            diffsv   = diffsv[diffsv > 1e-4]
+            pitch    = float(np.min(diffsv)) if len(diffsv) > 0 else 1.0
 
-        centersA = voxA.points  # (NA, 3) world coords of filled voxel centers
-        centersB = voxB.points  # (NB, 3)
+            # Compute face normals and snap to nearest axis
+            normals = np.cross(v1 - v0, v2 - v0)
+            norms   = np.linalg.norm(normals, axis=1, keepdims=True)
+            norms   = np.where(norms < 1e-10, 1.0, norms)
+            normals = normals / norms
+            snapped = np.zeros_like(normals)
+            axisIdx = np.argmax(np.abs(normals), axis=1)
+            for i, ax in enumerate(axisIdx):
+                snapped[i, ax] = np.sign(normals[i, ax])
 
-        # Step 3 — define a common grid origin from the combined bounding box
-        # Round origin to nearest pitch multiple so both grids snap cleanly
+            # Voxel center = face_center - snapped_normal * pitch/2
+            centers = face_centers - snapped * (pitch / 2.0)
+            centers = np.round(centers, 4)
+            centers = np.unique(centers, axis=0)
+            return centers, pitch
+
+        centersA, pitchA = extractCentersAndPitch(nodeA.GetPolyData())
+        centersB, pitchB = extractCentersAndPitch(nodeB.GetPolyData())
+
+        pitch = min(pitchA, pitchB)
+
+        if abs(pitchA - pitchB) > pitch * 0.01:
+            slicer.util.infoDisplay(
+                f"Model A pitch ({pitchA:.2f} mm) and Model B pitch ({pitchB:.2f} mm) differ. "
+                f"Boolean operation will be performed at the smaller pitch ({pitch:.2f} mm).",
+                windowTitle="Pitch mismatch"
+            )
+            # Re-extract centers for the coarser model at the finer pitch
+            # using mesh.contains() on the finer model's grid
+            def polyDataToTrimesh(polyData):
+                pts   = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData()).astype(np.float64)
+                cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
+                faces = cells.reshape(-1, 4)[:, 1:]
+                return trimesh.Trimesh(vertices=pts, faces=faces, process=False)
+
+            if pitchA > pitchB:
+                # Re-voxelize A at finer pitch using B's grid reference
+                meshA    = polyDataToTrimesh(nodeA.GetPolyData())
+                allC     = np.vstack([centersA, centersB])
+                orig_tmp = np.floor(allC.min(axis=0) / pitch) * pitch
+                bmin     = meshA.bounds[0]
+                bmax     = meshA.bounds[1]
+                nx = np.arange(int(np.floor((bmin[0]-orig_tmp[0])/pitch)), int(np.floor((bmax[0]-orig_tmp[0])/pitch))+2)
+                ny = np.arange(int(np.floor((bmin[1]-orig_tmp[1])/pitch)), int(np.floor((bmax[1]-orig_tmp[1])/pitch))+2)
+                nz = np.arange(int(np.floor((bmin[2]-orig_tmp[2])/pitch)), int(np.floor((bmax[2]-orig_tmp[2])/pitch))+2)
+                gx, gy, gz = np.meshgrid(nx, ny, nz, indexing='ij')
+                # Use centersB offset for alignment
+                r_ref    = np.mod(centersB[0] - orig_tmp, pitch)
+                cands    = orig_tmp + (np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * pitch) + r_ref
+                inside   = meshA.contains(cands)
+                centersA = cands[inside]
+            else:
+                # Re-voxelize B at finer pitch using A's grid reference
+                meshB    = polyDataToTrimesh(nodeB.GetPolyData())
+                allC     = np.vstack([centersA, centersB])
+                orig_tmp = np.floor(allC.min(axis=0) / pitch) * pitch
+                bmin     = meshB.bounds[0]
+                bmax     = meshB.bounds[1]
+                nx = np.arange(int(np.floor((bmin[0]-orig_tmp[0])/pitch)), int(np.floor((bmax[0]-orig_tmp[0])/pitch))+2)
+                ny = np.arange(int(np.floor((bmin[1]-orig_tmp[1])/pitch)), int(np.floor((bmax[1]-orig_tmp[1])/pitch))+2)
+                nz = np.arange(int(np.floor((bmin[2]-orig_tmp[2])/pitch)), int(np.floor((bmax[2]-orig_tmp[2])/pitch))+2)
+                gx, gy, gz = np.meshgrid(nx, ny, nz, indexing='ij')
+                r_ref    = np.mod(centersA[0] - orig_tmp, pitch)
+                cands    = orig_tmp + (np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * pitch) + r_ref
+                inside   = meshB.contains(cands)
+                centersB = cands[inside]
+
+        # Common grid origin: floor of combined minimum center
         allCenters = np.vstack([centersA, centersB])
         origin     = np.floor(allCenters.min(axis=0) / pitch) * pitch
 
-        # Step 4 — convert world centers to integer grid indices
-        # index = round((center - origin) / pitch)
-        def toIndices(centers):
-            return np.round((centers - origin) / pitch).astype(int)
+        # Map each center to its grid cell using floor
+        # Grid cell n covers [origin + n*pitch, origin + (n+1)*pitch]
+        # A voxel center falls in cell n = floor((center - origin) / pitch)
+        def toKeys(centers, origin, pitch):
+            idx = np.floor((centers - origin) / pitch).astype(int)
+            return set(map(tuple, idx))
 
-        idxA = toIndices(centersA)  # (NA, 3)
-        idxB = toIndices(centersB)  # (NB, 3)
-
-        # Step 5 — represent each set as a set of tuples for fast set operations
-        setA = set(map(tuple, idxA))
-        setB = set(map(tuple, idxB))
+        setA = toKeys(centersA, origin, pitch)
+        setB = toKeys(centersB, origin, pitch)
 
         if operation == "union":
             resultSet = setA | setB
@@ -1096,18 +1340,23 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
                 "For Intersection/Difference make sure the models overlap."
             )
 
-        # Step 6 — convert result index set back to a dense boolean matrix
-        resultIndices = np.array(list(resultSet))  # (M, 3)
-        dims          = resultIndices.max(axis=0) - resultIndices.min(axis=0) + 1
-        offset        = resultIndices.min(axis=0)
-        localIdx      = resultIndices - offset
+        # Convert result to dense boolean matrix
+        resultIndices = np.array(list(resultSet), dtype=np.int64)
+        localOffset   = resultIndices.min(axis=0)
+        localIdx      = resultIndices - localOffset
+        dims          = localIdx.max(axis=0) + 1
 
         denseMatrix   = np.zeros(dims, dtype=bool)
-        denseMatrix[localIdx[:, 0], localIdx[:, 1], localIdx[:, 2]] = True
+        denseMatrix[localIdx[:,0], localIdx[:,1], localIdx[:,2]] = True
 
-        # Step 7 — build trimesh VoxelGrid with correct transform
-        # The transform maps grid index (i,j,k) → world center of that voxel
-        worldOrigin    = origin + offset * pitch
+        # Compute the actual sub-pitch offset of model A's voxel centers
+        # (trimesh places voxel centers at an arbitrary sub-pitch position)
+        # r_A = how far A's centers are from the grid line in each axis
+        r_A = np.mod(centersA[0] - origin, pitch)
+
+        # World center of voxel at local index (0,0,0):
+        # global key = localOffset → actual world center = origin + localOffset*pitch + r_A
+        worldOrigin    = origin + localOffset.astype(float) * pitch + r_A
         transform      = np.eye(4) * pitch
         transform[0,3] = worldOrigin[0]
         transform[1,3] = worldOrigin[1]
@@ -1120,22 +1369,21 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         )
         surface = resultGrid.as_boxes()
 
-        # Step 8 — convert trimesh surface to VTK polydata
         v_out        = surface.vertices
         f_out        = surface.faces
         out_poly     = vtk.vtkPolyData()
         v_vtk        = vtk.util.numpy_support.numpy_to_vtk(v_out, deep=True)
-        pts          = vtk.vtkPoints()
-        pts.SetData(v_vtk)
-        out_poly.SetPoints(pts)
+        pts_vtk      = vtk.vtkPoints()
+        pts_vtk.SetData(v_vtk)
+        out_poly.SetPoints(pts_vtk)
         num_faces    = f_out.shape[0]
         cells_array  = hstack([full((num_faces, 1), 3), f_out]).astype(int64)
-        cells_vtk    = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array, deep=True)
+        cells_vtk    = vtk.util.numpy_support.numpy_to_vtkIdTypeArray(cells_array.ravel(), deep=True)
         connectivity = vtk.vtkCellArray()
         connectivity.SetCells(num_faces, cells_vtk)
         out_poly.SetPolys(connectivity)
 
-        resultNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", outputName)
+        resultNode = self._initModelNode(outputName)
         resultNode.SetAndObservePolyData(out_poly)
 
         return resultNode

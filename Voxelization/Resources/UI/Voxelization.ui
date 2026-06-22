@@ -197,36 +197,94 @@
          </widget>
         </item>
 
-        <!-- Pitch -->
+        <!-- Volume resolution (read-only, auto-filled) -->
         <item row="5" column="0">
-         <widget class="QLabel" name="labelPitch">
+         <widget class="QLabel" name="resolutionLabel">
           <property name="text">
-           <string>Pitch:</string>
+           <string>Resolution [mm]:</string>
+          </property>
+          <property name="toolTip">
+           <string>Voxel spacing of the input volume (X × Y × Z mm).</string>
           </property>
          </widget>
         </item>
         <item row="5" column="1">
-         <widget class="ctkSliderWidget" name="pitchWidget" native="true">
+         <widget class="QLabel" name="resolutionValueLabel">
+          <property name="text">
+           <string>—</string>
+          </property>
           <property name="toolTip">
-           <string>Set the pitch of the voxels.</string>
-          </property>
-          <property name="singleStep" stdset="0">
-           <double>0.050000000000000</double>
-          </property>
-          <property name="minimum" stdset="0">
-           <double>0.100000000000000</double>
-          </property>
-          <property name="maximum" stdset="0">
-           <double>5.000000000000000</double>
-          </property>
-          <property name="value" stdset="0">
-           <double>0.500000000000000</double>
+           <string>Voxel spacing of the input volume (X × Y × Z mm).</string>
           </property>
          </widget>
         </item>
 
-        <!-- Threshold -->
+        <!-- Pitch -->
         <item row="6" column="0">
+         <widget class="QLabel" name="labelPitch">
+          <property name="text">
+           <string>Pitch [cm³]:</string>
+          </property>
+         </widget>
+        </item>
+        <item row="6" column="1">
+         <layout class="QHBoxLayout" name="pitchLayout">
+          <item>
+           <widget class="ctkSliderWidget" name="pitchWidget" native="true">
+            <property name="toolTip">
+             <string>Set the pitch of the voxels.</string>
+            </property>
+            <property name="singleStep" stdset="0">
+             <double>0.050000000000000</double>
+            </property>
+            <property name="minimum" stdset="0">
+             <double>0.100000000000000</double>
+            </property>
+            <property name="maximum" stdset="0">
+             <double>5.000000000000000</double>
+            </property>
+            <property name="value" stdset="0">
+             <double>0.500000000000000</double>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="pitchMaxLabel">
+            <property name="text">
+             <string>Max:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QDoubleSpinBox" name="pitchMaxSpinBox">
+            <property name="toolTip">
+             <string>Set the maximum value for the pitch slider.</string>
+            </property>
+            <property name="minimum">
+             <double>0.100000000000000</double>
+            </property>
+            <property name="maximum">
+             <double>100.000000000000000</double>
+            </property>
+            <property name="singleStep">
+             <double>0.500000000000000</double>
+            </property>
+            <property name="value">
+             <double>5.000000000000000</double>
+            </property>
+            <property name="decimals">
+             <number>2</number>
+            </property>
+            <property name="maximumWidth">
+             <number>70</number>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+
+        <!-- Threshold -->
+        <item row="7" column="0">
          <widget class="QLabel" name="labelThreshold">
           <property name="text">
            <string>Threshold:</string>
@@ -239,7 +297,7 @@
           </property>
          </widget>
         </item>
-        <item row="6" column="1">
+        <item row="7" column="1">
          <widget class="ctkSliderWidget" name="thresholdWidget" native="true">
           <property name="toolTip">
            <string>Minimum mesh occupancy fraction (0.0-1.0) required to keep a voxel.
@@ -266,14 +324,14 @@
         </item>
 
         <!-- Output model — auto-named but user can override -->
-        <item row="7" column="0">
+        <item row="8" column="0">
          <widget class="QLabel" name="labelOutputModel">
           <property name="text">
            <string>Output model:</string>
           </property>
          </widget>
         </item>
-        <item row="7" column="1">
+        <item row="8" column="1">
          <widget class="qMRMLNodeComboBox" name="outputSelectorModel" native="true">
           <property name="toolTip">
            <string>Output model node. Auto-named from input, but can be overridden.</string>
@@ -599,12 +657,22 @@
         </item>
         <item>
          <property name="text">
+          <string>OBJ</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
           <string>MSH</string>
          </property>
         </item>
         <item>
          <property name="text">
-          <string>OBJ</string>
+          <string>PLY</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>OFF</string>
          </property>
         </item>
        </widget>
