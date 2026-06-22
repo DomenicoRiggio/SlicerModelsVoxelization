@@ -14,6 +14,8 @@ A 3D Slicer extension for converting surface meshes and segmentations into solid
 
 ### Boolean Operations
 - Apply **Union**, **Intersection**, **Difference (A−B)**, or **Difference (B−A)** between any two voxelized models
+- Boolean operations work best when both models are voxelized with the **same pitch**
+- If the two models have different pitches, the operation is automatically performed at the **smaller pitch** — the coarser model is re-sampled accordingly and a warning message is shown
 
 ### Quantitative Metrics
 - **Volume** of the original and voxelized model in cm³
