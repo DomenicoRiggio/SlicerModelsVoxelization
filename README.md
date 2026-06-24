@@ -1,4 +1,14 @@
+<div align="center">
+  
 # SlicerModelsVoxelization
+<br>
+
+<img src="https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/refs/heads/main/Voxelization/Resources/Icons/Voxelization.png" alt="drawing" style="width:300px;"/>
+
+[![3D Slicer](https://img.shields.io/badge/3D_Slicer_-_5.8%20%7C%205.10%20%7C%205.11_Compatible-blue?style=for-the-badge)](https://download.slicer.org/)
+</div>
+
+---
 
 A 3D Slicer extension for converting surface meshes and segmentations into solid cubical voxel models, with support for boolean operations, quantitative metrics, and multi-format export.
 
@@ -90,5 +100,5 @@ Dependencies are installed automatically on first use.
 
 - Laura Lichtlein (KIT Institute of Biomedical Engineering)
 - Domenico Riggio (KIT Institute of Biomedical Engineering)
-- Ciro Benito Raggio (KIT Institute of Biomedical Engineering)
+- [Ciro Benito Raggio](https://github.com/ciroraggio/) (KIT Institute of Biomedical Engineering)
 - Kimia Ghodousipour (KIT Institute of Biomedical Engineering)
