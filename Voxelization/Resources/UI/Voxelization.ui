@@ -12,6 +12,18 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
 
+   <!-- GUIDE BUTTON -->
+   <item>
+    <widget class="QPushButton" name="guideButton">
+     <property name="text">
+      <string>Guide 📖</string>
+     </property>
+     <property name="toolTip">
+      <string>Open the user guide for this extension.</string>
+     </property>
+    </widget>
+   </item>
+
    <!-- INPUTS SECTION -->
    <item>
     <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton" native="true">

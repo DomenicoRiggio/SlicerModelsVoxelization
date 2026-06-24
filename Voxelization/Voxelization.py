@@ -168,7 +168,12 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.inputModelSelector.currentNodeChanged.connect(self._updateOutputNamePreview)
 
         # Action buttons
+        self.ui.guideButton.connect("clicked(bool)", self.onGuideButton)
         self.ui.voxelButton.connect("clicked(bool)", self.onVoxelButton)
+
+        # Observe scene node additions and removals to keep all combos up to date
+        self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeAddedEvent,   self._onSceneNodeAdded)
+        self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self._onSceneNodeRemoved)
         self.ui.exportToFileButton.connect("clicked(bool)", self.onExportButton)
         self.ui.outputSelectorModel.currentNodeChanged.connect(self._onOutputSelectorChanged)
         self.ui.exportMetricsButton.connect("clicked(bool)", self.onExportMetricsButton)
@@ -494,6 +499,31 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # Voxelize button
     # ------------------------------------------------------------------
 
+    def _onSceneNodeAdded(self, caller, event):
+        """Refresh all model-listing combos when a new node is added to the scene."""
+        self._refreshAllCombos()
+
+    def _onSceneNodeRemoved(self, caller, event):
+        """Refresh all model-listing combos when a node is removed from the scene."""
+        self._refreshAllCombos()
+
+    def _refreshAllCombos(self):
+        """
+        Refresh all plain QComboBox widgets that list models from the scene.
+        Called whenever nodes are added or removed so deleted models
+        disappear immediately from all dropdowns.
+        """
+        self._populateBooleanCombos()
+        self._populateExportCombo()
+        self._populateMetricsModelCombo()
+        self._updateBooleanSectionState()
+
+    def onGuideButton(self) -> None:
+        """Show the Help Guide and Acknowledgements dialog."""
+        from VoxelizationLib.UI.HelpDialog import HelpDialog
+        dialog = HelpDialog(slicer.util.mainWindow())
+        dialog.exec_()
+
     def onVoxelButton(self) -> None:
         with slicer.util.tryWithErrorDisplay(_("Voxelization failed."), waitCursor=True):
             self.setInfoLabel("")
@@ -512,7 +542,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 raise ValueError("Please select an input volume.")
 
             # Warn for very small pitch values — computation grows as pitch^-3
-            if pitch < 0.5:
+            if pitch < 1.0:
                 msg = (
                     f"Pitch {pitch:.2f} mm is very small and may cause a long computation "
                     f"or freeze the application. Do you want to proceed?"
