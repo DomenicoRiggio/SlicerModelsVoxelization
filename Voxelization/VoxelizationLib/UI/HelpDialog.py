@@ -3,7 +3,7 @@ import qt
 class HelpDialog(qt.QDialog):
     def __init__(self, parent=None):
         super(HelpDialog, self).__init__(parent)
-        from VoxelizationLib.UI.utils import HELP_TEXT, CONTRIBUTORS
+        from VoxelizationLib.UI.utils import getHelpText, CONTRIBUTORS
         self.setWindowTitle("Voxelization - Help Guide and Acknowledgements")
         self.setMinimumWidth(600)
         self.setMinimumHeight(700)
@@ -20,7 +20,7 @@ class HelpDialog(qt.QDialog):
         helpBrowser = qt.QTextBrowser()
         helpBrowser.setOpenExternalLinks(True)
         helpBrowser.setReadOnly(True)
-        helpBrowser.setHtml(HELP_TEXT)
+        helpBrowser.setHtml(getHelpText())
         helpLayout.addWidget(helpBrowser)
         tabWidget.addTab(helpTab, "Help Guide")
 

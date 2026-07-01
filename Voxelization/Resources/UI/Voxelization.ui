@@ -12,16 +12,36 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
 
-   <!-- GUIDE BUTTON -->
+   <!-- GUIDE BUTTON ROW with logo -->
    <item>
-    <widget class="QPushButton" name="guideButton">
-     <property name="text">
-      <string>Guide 📖</string>
-     </property>
-     <property name="toolTip">
-      <string>Open the user guide for this extension.</string>
-     </property>
-    </widget>
+    <layout class="QHBoxLayout" name="guideLayout">
+     <property name="spacing"><number>4</number></property>
+     <item>
+      <widget class="QLabel" name="logoLabel">
+       <property name="text"><string/></property>
+       <property name="alignment"><set>Qt::AlignVCenter|Qt::AlignLeft</set></property>
+       <property name="scaledContents"><bool>false</bool></property>
+       <property name="minimumSize">
+        <size><width>40</width><height>40</height></size>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="guideButton">
+       <property name="text"><string>Guide 📖</string></property>
+       <property name="toolTip"><string>Open the user guide for this extension.</string></property>
+       <property name="minimumSize">
+        <size><width>200</width><height>40</height></size>
+       </property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+         <horstretch>1</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
 
    <!-- INPUTS SECTION -->

@@ -171,6 +171,14 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.guideButton.connect("clicked(bool)", self.onGuideButton)
         self.ui.voxelButton.connect("clicked(bool)", self.onVoxelButton)
 
+        # Set project logo next to the Guide button
+        import qt, os
+        logoPath = os.path.join(os.path.dirname(__file__), "Resources", "Icons", "Voxelization.png")
+        if os.path.exists(logoPath):
+            pix = qt.QPixmap(logoPath).scaledToHeight(40, qt.Qt.SmoothTransformation)
+            self.ui.logoLabel.setPixmap(pix)
+            self.ui.logoLabel.setFixedSize(pix.width(), pix.height())
+
         # Observe scene node additions and removals to keep all combos up to date
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeAddedEvent,   self._onSceneNodeAdded)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self._onSceneNodeRemoved)

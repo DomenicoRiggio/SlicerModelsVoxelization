@@ -1,4 +1,5 @@
 import os
+import base64
 
 CONTRIBUTORS = [
     "Laura Lichtlein (Karlsruhe Institute of Technology, Germany)",
@@ -8,11 +9,20 @@ CONTRIBUTORS = [
 ]
 
 MODULE_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-LOGO_PATH       = os.path.join(MODULE_ROOT_DIR, 'Resources', 'Icons', 'Voxy.png')
+LOGO_PATH       = os.path.join(MODULE_ROOT_DIR, 'Resources', 'Icons', 'Voxelization.png').replace('\\', '/')
 
-HELP_TEXT = f"""
+def _logo_html(width=200, height=200):
+    """Return an <img> tag with the logo embedded as base64 (works in QTextBrowser)."""
+    if os.path.exists(LOGO_PATH):
+        with open(LOGO_PATH, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode()
+        return f'<img src="data:image/png;base64,{b64}" width="{width}" height="{height}">'
+    return ''
+
+def getHelpText():
+    return f"""
 <center>
-    <img src="file://{LOGO_PATH}" width=200 height=200>
+    {_logo_html(200, 200)}
 </center>
 <br/>
 <b>Description</b>
@@ -55,3 +65,6 @@ quantitative metrics, and multi-format export.
         https://github.com/DomenicoRiggio/SlicerModelsVoxelization</a></li>
 </ul>
 """
+
+# Keep HELP_TEXT as a string for backward compatibility
+HELP_TEXT = getHelpText()
