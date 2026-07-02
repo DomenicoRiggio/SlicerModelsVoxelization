@@ -5,7 +5,7 @@
 
 <img src="https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/refs/heads/develop/Voxelization/Resources/Icons/Voxelization.png?raw=true" alt="drawing" style="width:300px;"/>
 
-<img src="https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/refs/heads/develop/Voxelization/Resources/Icons/Examples.png?raw=true" alt="drawing" style="width:300px;"/>
+
 
 [![3D Slicer](https://img.shields.io/badge/3D_Slicer_-_5.8%20%7C%205.10%20%7C%205.11_Compatible-blue?style=for-the-badge)](https://download.slicer.org/)
 </div>
@@ -15,6 +15,8 @@
 A 3D Slicer extension for converting surface meshes and segmentations into solid cubical voxel models, with support for boolean operations, quantitative metrics, and multi-format export.
 
 ---
+<img src="https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/refs/heads/develop/Voxelization/Resources/Icons/Examples.png?raw=true" alt="drawing" style="width:750px;"/>
+
 
 ## Features
 
