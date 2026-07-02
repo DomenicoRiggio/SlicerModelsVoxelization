@@ -14,10 +14,12 @@
 
 A 3D Slicer extension for converting surface meshes and segmentations into solid cubical voxel models, with support for boolean operations, quantitative metrics, and multi-format export.
 
----
 <div align="center">
   <img src="https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/refs/heads/develop/Voxelization/Resources/Icons/Examples.png?raw=true" alt="Examples" width="900"/>
 </div>
+
+---
+
 
 
 ## Features
