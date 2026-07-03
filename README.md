@@ -110,6 +110,6 @@ Dependencies are installed automatically on first use.
 - [Kimia Ghodousipour](https://github.com/kimiaghodoosi) (KIT Institute of Biomedical Engineering)
 - Laura Lichtlein (KIT Institute of Biomedical Engineering)
 - [Ciro Benito Raggio](https://github.com/ciroraggio/) (KIT Institute of Biomedical Engineering)
-- [Maria Francesca Spadea] (Karlsruhe Institute of Technology, Germany)
+- Maria Francesca Spadea (Karlsruhe Institute of Technology, Germany)
 
 
