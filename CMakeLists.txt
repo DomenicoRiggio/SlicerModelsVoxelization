@@ -6,7 +6,7 @@ project(Voxelization)
 # Extension meta-information
 set(EXTENSION_HOMEPAGE "https://github.com/DomenicoRiggio/SlicerModelsVoxelization")
 set(EXTENSION_CATEGORY "Utilities")
-set(EXTENSION_CONTRIBUTORS "Kimia Ghodousipour (Institute of Biomedical Engineering, KIT), Laura Lichtlein (Institute of Biomedical Engineering, KIT), Ciro Benito Raggio (Institute of Biomedical Engineering, KIT), Domenico Riggio (Institute of Biomedical Engineering, KIT), ")
+set(EXTENSION_CONTRIBUTORS "Domenico Riggio (Institute of Biomedical Engineering, KIT), Kimia Ghodousipour (Institute of Biomedical Engineering, KIT), Laura Lichtlein (Institute of Biomedical Engineering, KIT), Ciro Benito Raggio (Institute of Biomedical Engineering, KIT), Maria Francesca Spadea (Karlsruhe Institute of Technology, Germany)")
 set(EXTENSION_DESCRIPTION "This extensions aims at voxelizing meshes.")
 set(EXTENSION_ICONURL "https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/main/Voxelization/Resources/Icons/Voxelization.png")
 set(EXTENSION_SCREENSHOTURLS "https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/main/Voxelization/Resources/Icons/Examples.png")
