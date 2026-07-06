@@ -367,6 +367,7 @@ def displayVoxelizedModel(voxelizedModel) -> None:
     dn = voxelizedModel.GetDisplayNode()
     dn.SetVisibility(True)
     dn.SetOpacity(1.0)
+    dn.SetRepresentation(dn.SurfaceRepresentation)
     voxelizedModel.SetAttribute("Terminologies.TerminologyEntry", "")
     voxelizedModel.GetPolyData().Modified()
     
@@ -395,11 +396,9 @@ def computeVolumeCm3(modelNode) -> float:
 def computeMetrics(grid_original, grid_voxelized, originalVoxelCount, voxelizedVoxelCount, originalVolCm3=0.0, voxelizedVolCm3=0.0) -> dict:
     from numpy import sum
 
-    # DeltaV percentage — relative volume difference
-    deltaVPct = (abs(voxelizedVoxelCount - originalVoxelCount) / originalVoxelCount) * 100 if originalVoxelCount > 0 else 0.0
-
-    # DeltaV in cm³ — absolute volume difference
+    # DeltaV percentage — deltaV(cm³) / voxelized volume × 100
     deltaVCm3 = abs(voxelizedVolCm3 - originalVolCm3)
+    deltaVPct = (deltaVCm3 / voxelizedVolCm3) * 100 if voxelizedVolCm3 > 0 else 0.0
 
     return {
         "deltaV":    deltaVPct,
