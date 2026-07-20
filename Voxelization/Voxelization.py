@@ -55,6 +55,15 @@ This module was developed by Laura Lichtlein, Domenico Riggio, Ciro Benito Raggi
 (KIT Institute of Biomedical Engineering).
 """)
 
+    def registerIO(self):
+        """
+        Called automatically by qSlicerScriptedLoadableModule during module
+        registration. Registers the MSH file writer so ".msh" appears
+        directly in Slicer's standard "Save Data" dialog.
+        """
+        from VoxelizationLib.MSHFileWriter import MSHFileWriter
+        slicer.app.ioManager().registerIO(MSHFileWriter(self))
+
 
 #
 # VoxelizationParameterNode
@@ -101,7 +110,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = None  # Business logic instance
         self._parameterNode = None  # Currently active parameter node
         self._parameterNodeGuiTag = None  # Tag returned by connectGui(); needed to disconnect later
-        self.requiredDeps = ["trimesh", "meshio", "rtree"]  # Python packages required at runtime
+        self.requiredDeps = ["trimesh", "meshio"]  # Python packages required at runtime
         self._segmentationObserverTag = None  # VTK observer tag on the currently watched segmentation node
         self._observedSegmentationNode = None  # Reference to the segmentation node being observed
         self._lastOutputNode    = None  # Last voxelized output node — used for export
@@ -552,7 +561,7 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             # Warn for very small pitch values — computation grows as pitch^-3
             if pitch < 1.0:
                 msg = (
-                    f"Pitch {pitch:.2f} mm is very small and may cause a long computation "
+                    f"Edge size {pitch:.2f} mm is very small and may cause a long computation "
                     f"or freeze the application. Do you want to proceed?"
                 )
                 if not slicer.util.confirmOkCancelDisplay(msg, "Warning: Small pitch value"):
@@ -561,11 +570,12 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             tempMesh  = None
 
             if isModel:
-                # ---- Model mode ----
-                inputMesh = self.ui.inputModelSelector.currentNode()
+                # ---- Model mode: trimesh voxelization ----
+                inputMesh      = self.ui.inputModelSelector.currentNode()
                 if not inputMesh:
                     raise ValueError("Please select an input model.")
-                voxName = f"{inputMesh.GetName()}_vox"
+                voxName        = f"{inputMesh.GetName()}_vox"
+                isSegmentation = False
 
             else:
                 # ---- Segmentation mode ----
@@ -577,14 +587,13 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 if idx < 0:
                     raise ValueError("Please select a segment from the list.")
 
-                # itemData holds the stable segment ID (not the display name)
-                segmentId   = self.ui.inputSegmentSelector.itemData(idx)  # Read the segment ID stored as item data (stable unlike the display name)
+                segmentId   = self.ui.inputSegmentSelector.itemData(idx)
                 segmentName = self.ui.inputSegmentSelector.currentText
 
-                # Convert that one segment to a temporary model  # Export the chosen segment into a temporary model node
-                inputMesh = self.logic.segmentationToModel(segNode, segmentId)
-                tempMesh  = inputMesh   # remember so we can remove it afterward  # Keep reference so we can remove it after voxelization
-                voxName   = f"{segmentName}_vox"
+                inputMesh      = self.logic.segmentationToModel(segNode, segmentId)
+                tempMesh       = inputMesh
+                voxName        = f"{segmentName}_vox"
+                isSegmentation = False
 
             # Determine the output node to use:
             existingNode = self.ui.outputSelectorModel.currentNode()
@@ -646,7 +655,9 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             self._parameterNode.outputModel = outputModel
 
-            metricsValues = self.logic.voxelizeModelToModel(inputVolume, inputMesh, outputModel, pitch, threshold, self.ui)
+            metricsValues = self.logic.voxelizeModelToModel(
+                inputVolume, inputMesh, outputModel, pitch, threshold, self.ui
+            )
 
             # Store metrics per model name so switching the combo reloads them
             if metricsValues:
@@ -893,12 +904,13 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # Row definitions: (row index, label text, internal key)
     _METRIC_ROWS = [
-        (0, "Volume original [cm³]",        "volOriginal"),
-        (1, "Volume voxelized [cm³]",       "volVoxelized"),
-        (2, "ΔV [cm³]",                     "deltaVCm3"),
-        (3, "ΔV [%]",                       "deltaVPct"),
-        (4, "Excluded Mean ± Std",          "meanStd"),
-        (5, "Excluded Median [IQR 5%-95%]", "medianIqr"),
+        (0, "Voxel count",                  "voxelCount"),
+        (1, "Volume original [cm³]",        "volOriginal"),
+        (2, "Volume voxelized [cm³]",       "volVoxelized"),
+        (3, "ΔV [cm³]",                     "deltaVCm3"),
+        (4, "ΔV [%]",                       "deltaVPct"),
+        (5, "Excluded Mean ± Std",          "meanStd"),
+        (6, "Excluded Median [IQR 5%-95%]", "medianIqr"),
     ]
 
     def _initMetricsTable(self):
@@ -1023,7 +1035,6 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "OBJ": os.path.join(directory, f"{baseFileName}.obj"),
             "MSH": os.path.join(directory, f"{baseFileName}.msh"),
             "PLY": os.path.join(directory, f"{baseFileName}.ply"),
-            "OFF": os.path.join(directory, f"{baseFileName}.off"),
         }
 
         selectedFormat = self.ui.exportFormatCombo.currentText
@@ -1038,7 +1049,6 @@ class VoxelizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 "OBJ": self.logic.exportModelOBJ,
                 "MSH": self.logic.exportModelMSH,
                 "PLY": self.logic.exportModelPLY,
-                "OFF": self.logic.exportModelOFF,
             }
             export_map[selectedFormat](outputModel, paths[selectedFormat])
             self.setInfoLabel(f"Model saved to: {paths[selectedFormat]}")
@@ -1059,14 +1069,17 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
     def _initModelNode(self, name: str):
         """
-        Create a vtkMRMLModelNode with proper display node initialization.
+        Create a vtkMRMLModelNode using Slicer's standard scene infrastructure.
+        Uses AddNewNodeByClass (Slicer's recommended way to add nodes) and
+        CreateDefaultDisplayNodes (Slicer's standard display initialization).
         """
         node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", name)
         node.CreateDefaultDisplayNodes()
         dn = node.GetDisplayNode()
-        dn.SetVisibility(True)
-        dn.SetOpacity(1.0)
-        dn.SetRepresentation(dn.SurfaceRepresentation)  # solid surface, not wireframe
+        if dn:
+            dn.SetVisibility(True)
+            dn.SetOpacity(1.0)
+            dn.SetRepresentation(dn.SurfaceRepresentation)
         node.SetAttribute("Terminologies.TerminologyEntry", "")
         return node
 
@@ -1120,16 +1133,13 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
                 "volVoxelized": f"{voxelizedVolCm3:.4f}",
                 "deltaVCm3":    f"{metrics['deltaVCm3']:.4f}",
                 "deltaVPct":    f"{metrics['deltaV']:.4f}",
+                "voxelCount":   f"{int(voxelizedVoxelCount)}",
                 "meanStd":      f"{stats['mean']:.2f}% \u00b1 {stats['std']:.2f}%",
                 "medianIqr":    f"{stats['median']:.2f}% [{stats['p5']:.2f}% \u2013 {stats['p95']:.2f}%]",
             }
 
             slicer.app.processEvents()
             return metricsValues
-
-    # ------------------------------------------------------------------
-    # Segmentation → Model  (accepts a specific segmentId)
-    # ------------------------------------------------------------------
 
     def segmentationToModel(self, segmentationNode: vtkMRMLSegmentationNode, segmentId: str):
         """
@@ -1186,20 +1196,10 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
     # Export helpers  (self was missing on STL/MSH in the original — fixed)
     # ------------------------------------------------------------------
 
-    def exportModelOBJ(self, modelNode, filePath):
-        """Export modelNode as a Wavefront OBJ file (.obj)."""
-        from VoxelizationLib.logicUtils import exportModelOBJ
-        exportModelOBJ(modelNode, filePath)
-
     def exportModelPLY(self, modelNode, filePath):
         """Export modelNode as a PLY binary file (.ply)."""
         from VoxelizationLib.logicUtils import exportModelPLY
         exportModelPLY(modelNode, filePath)
-
-    def exportModelOFF(self, modelNode, filePath):
-        """Export modelNode as an OFF file (.off)."""
-        from VoxelizationLib.logicUtils import exportModelOFF
-        exportModelOFF(modelNode, filePath)
 
     def exportModelVTK(self, modelNode, filePath):
         from VoxelizationLib.logicUtils import exportModelVTK
@@ -1209,7 +1209,12 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
         from VoxelizationLib.logicUtils import exportModelSTL
         exportModelSTL(modelNode, filePath)
 
+    def exportModelOBJ(self, modelNode, filePath):
+        from VoxelizationLib.logicUtils import exportModelOBJ
+        exportModelOBJ(modelNode, filePath)
+
     def exportModelMSH(self, modelNode, filePath):
+        """Export modelNode as a Gmsh MSH 2.2 file (.msh)."""
         from VoxelizationLib.logicUtils import exportModelMSH
         exportModelMSH(modelNode, filePath)
 
@@ -1239,12 +1244,22 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
     def applyBooleanOperation(self, nodeA, nodeB, operation: str, outputName: str):
         """
-        Boolean operation between two voxelized model nodes.
+        Boolean operation between two voxelized hex mesh models.
 
-        Extract voxel centers directly from the existing polydata using
-        face normals (center = face_centroid - snapped_normal * pitch/2),
-        then snap both sets of centers to a common grid using
-        floor((center - origin) / pitch) for alignment.
+        Following the reviewer's suggestion: a hex mesh on a uniform grid is
+        equivalent to a labelmap image. We resample both models onto a common
+        grid as dense boolean numpy arrays (the labelmap-equivalent
+        representation), then perform the boolean operation with a single
+        numpy call -- exactly as suggested for labelmap volumes.
+
+        Pipeline
+        --------
+        1. Extract voxel centers from each hex mesh (face-normal method).
+        2. Define a common grid (origin, pitch) covering both bounding boxes.
+        3. Rasterize each model's centers into a dense boolean array on that
+           common grid -- this dense array IS the labelmap-equivalent.
+        4. Boolean operation = one numpy call (logical_or / logical_and / etc).
+        5. Rebuild the hex surface from the resulting dense array.
         """
         import trimesh
         import numpy as np
@@ -1252,35 +1267,28 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
         def extractCentersAndPitch(polyData):
             """
-            Extract voxel centers and pitch from a voxelized polydata.
-            Uses face (min+max)/2 as the face center — NOT the triangle centroid
-            which is at 1/3 from vertices and gives wrong results.
-            center = face_center - snapped_normal * pitch/2
+            Extract voxel centers from a hex mesh polydata using face
+            centers and normals:  center = face_center - normal * pitch/2
+            Pitch is estimated from vertex spacing (adjacent cubes share
+            corners, so min diff between unique vertex coords = pitch).
             """
             pts   = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData()).astype(np.float64)
             cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
             tris  = cells.reshape(-1, 4)[:, 1:]
 
-            v0 = pts[tris[:,0]]
-            v1 = pts[tris[:,1]]
-            v2 = pts[tris[:,2]]
+            v0 = pts[tris[:, 0]]
+            v1 = pts[tris[:, 1]]
+            v2 = pts[tris[:, 2]]
 
-            # Face center = (min+max)/2 per axis over triangle vertices
-            # This correctly gives the square face center for both triangles
-            # of a split quad face
             face_min     = np.minimum(np.minimum(v0, v1), v2)
             face_max     = np.maximum(np.maximum(v0, v1), v2)
             face_centers = (face_min + face_max) / 2.0
 
-            # Estimate pitch from VERTEX x-spacings (not face centers)
-            # Cube vertices are at cx ± pitch/2 → adjacent cubes share corners
-            # so min diff between unique vertex x-coords = pitch
-            uniqueXv = np.unique(np.round(pts[:,0], 4))
+            uniqueXv = np.unique(np.round(pts[:, 0], 4))
             diffsv   = np.diff(uniqueXv)
             diffsv   = diffsv[diffsv > 1e-4]
             pitch    = float(np.min(diffsv)) if len(diffsv) > 0 else 1.0
 
-            # Compute face normals and snap to nearest axis
             normals = np.cross(v1 - v0, v2 - v0)
             norms   = np.linalg.norm(normals, axis=1, keepdims=True)
             norms   = np.where(norms < 1e-10, 1.0, norms)
@@ -1290,7 +1298,6 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
             for i, ax in enumerate(axisIdx):
                 snapped[i, ax] = np.sign(normals[i, ax])
 
-            # Voxel center = face_center - snapped_normal * pitch/2
             centers = face_centers - snapped * (pitch / 2.0)
             centers = np.round(centers, 4)
             centers = np.unique(centers, axis=0)
@@ -1303,103 +1310,72 @@ class VoxelizationLogic(ScriptedLoadableModuleLogic):
 
         if abs(pitchA - pitchB) > pitch * 0.01:
             slicer.util.infoDisplay(
-                f"Model A pitch ({pitchA:.2f} mm) and Model B pitch ({pitchB:.2f} mm) differ. "
-                f"Boolean operation will be performed at the smaller pitch ({pitch:.2f} mm).",
-                windowTitle="Pitch mismatch"
+                f"Model A edge size ({pitchA:.2f} mm) and Model B edge size ({pitchB:.2f} mm) differ. "
+                f"Boolean operation will be performed at the smaller edge size ({pitch:.2f} mm).",
+                windowTitle="Edge size mismatch"
             )
-            # Re-extract centers for the coarser model at the finer pitch
-            # using mesh.contains() on the finer model's grid
-            def polyDataToTrimesh(polyData):
-                pts   = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPoints().GetData()).astype(np.float64)
-                cells = vtk.util.numpy_support.vtk_to_numpy(polyData.GetPolys().GetData())
-                faces = cells.reshape(-1, 4)[:, 1:]
-                return trimesh.Trimesh(vertices=pts, faces=faces, process=False)
 
-            if pitchA > pitchB:
-                # Re-voxelize A at finer pitch using B's grid reference
-                meshA    = polyDataToTrimesh(nodeA.GetPolyData())
-                allC     = np.vstack([centersA, centersB])
-                orig_tmp = np.floor(allC.min(axis=0) / pitch) * pitch
-                bmin     = meshA.bounds[0]
-                bmax     = meshA.bounds[1]
-                nx = np.arange(int(np.floor((bmin[0]-orig_tmp[0])/pitch)), int(np.floor((bmax[0]-orig_tmp[0])/pitch))+2)
-                ny = np.arange(int(np.floor((bmin[1]-orig_tmp[1])/pitch)), int(np.floor((bmax[1]-orig_tmp[1])/pitch))+2)
-                nz = np.arange(int(np.floor((bmin[2]-orig_tmp[2])/pitch)), int(np.floor((bmax[2]-orig_tmp[2])/pitch))+2)
-                gx, gy, gz = np.meshgrid(nx, ny, nz, indexing='ij')
-                # Use centersB offset for alignment
-                r_ref    = np.mod(centersB[0] - orig_tmp, pitch)
-                cands    = orig_tmp + (np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * pitch) + r_ref
-                inside   = meshA.contains(cands)
-                centersA = cands[inside]
-            else:
-                # Re-voxelize B at finer pitch using A's grid reference
-                meshB    = polyDataToTrimesh(nodeB.GetPolyData())
-                allC     = np.vstack([centersA, centersB])
-                orig_tmp = np.floor(allC.min(axis=0) / pitch) * pitch
-                bmin     = meshB.bounds[0]
-                bmax     = meshB.bounds[1]
-                nx = np.arange(int(np.floor((bmin[0]-orig_tmp[0])/pitch)), int(np.floor((bmax[0]-orig_tmp[0])/pitch))+2)
-                ny = np.arange(int(np.floor((bmin[1]-orig_tmp[1])/pitch)), int(np.floor((bmax[1]-orig_tmp[1])/pitch))+2)
-                nz = np.arange(int(np.floor((bmin[2]-orig_tmp[2])/pitch)), int(np.floor((bmax[2]-orig_tmp[2])/pitch))+2)
-                gx, gy, gz = np.meshgrid(nx, ny, nz, indexing='ij')
-                r_ref    = np.mod(centersA[0] - orig_tmp, pitch)
-                cands    = orig_tmp + (np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * pitch) + r_ref
-                inside   = meshB.contains(cands)
-                centersB = cands[inside]
-
-        # Common grid origin: floor of combined minimum center
+        # --------------------------------------------------------------
+        # Step 2 -- common grid covering both models
+        # --------------------------------------------------------------
         allCenters = np.vstack([centersA, centersB])
-        origin     = np.floor(allCenters.min(axis=0) / pitch) * pitch
+        gridOrigin = np.floor(allCenters.min(axis=0) / pitch) * pitch
+        gridMax    = np.ceil(allCenters.max(axis=0) / pitch) * pitch
+        gridDims   = np.round((gridMax - gridOrigin) / pitch).astype(int) + 1
 
-        # Map each center to its grid cell using floor
-        # Grid cell n covers [origin + n*pitch, origin + (n+1)*pitch]
-        # A voxel center falls in cell n = floor((center - origin) / pitch)
-        def toKeys(centers, origin, pitch):
-            idx = np.floor((centers - origin) / pitch).astype(int)
-            return set(map(tuple, idx))
+        # --------------------------------------------------------------
+        # Step 3 -- rasterize each model onto the common grid as a dense
+        # boolean array. This dense array is the direct equivalent of a
+        # labelmap image / uniform-grid hex mesh, as the reviewer noted.
+        # --------------------------------------------------------------
+        def toDenseArray(centers, origin, pitch, dims):
+            idx   = np.floor((centers - origin) / pitch + 0.5).astype(int)
+            idx   = np.clip(idx, 0, dims - 1)
+            array = np.zeros(tuple(dims), dtype=bool)
+            array[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+            return array
 
-        setA = toKeys(centersA, origin, pitch)
-        setB = toKeys(centersB, origin, pitch)
+        labelmapA = toDenseArray(centersA, gridOrigin, pitch, gridDims)
+        labelmapB = toDenseArray(centersB, gridOrigin, pitch, gridDims)
 
+        # --------------------------------------------------------------
+        # Step 4 -- boolean operation: a single numpy call, exactly as
+        # suggested for labelmap volumes.
+        # --------------------------------------------------------------
         if operation == "union":
-            resultSet = setA | setB
+            resultArray = np.logical_or(labelmapA, labelmapB)
         elif operation == "intersection":
-            resultSet = setA & setB
+            resultArray = np.logical_and(labelmapA, labelmapB)
         elif operation == "difference":
-            resultSet = setA - setB
+            resultArray = np.logical_and(labelmapA, np.logical_not(labelmapB))
         elif operation == "difference_ba":
-            resultSet = setB - setA
+            resultArray = np.logical_and(labelmapB, np.logical_not(labelmapA))
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
-        if not resultSet:
+        if not resultArray.any():
             raise ValueError(
                 "Boolean operation produced an empty result. "
                 "For Intersection/Difference make sure the models overlap."
             )
 
-        # Convert result to dense boolean matrix
-        resultIndices = np.array(list(resultSet), dtype=np.int64)
+        # --------------------------------------------------------------
+        # Step 5 -- rebuild hex surface from the resulting dense array
+        # --------------------------------------------------------------
+        resultIndices = np.argwhere(resultArray)
         localOffset   = resultIndices.min(axis=0)
         localIdx      = resultIndices - localOffset
         dims          = localIdx.max(axis=0) + 1
 
-        denseMatrix   = np.zeros(dims, dtype=bool)
-        denseMatrix[localIdx[:,0], localIdx[:,1], localIdx[:,2]] = True
+        denseMatrix = np.zeros(dims, dtype=bool)
+        denseMatrix[localIdx[:, 0], localIdx[:, 1], localIdx[:, 2]] = True
 
-        # Compute the actual sub-pitch offset of model A's voxel centers
-        # (trimesh places voxel centers at an arbitrary sub-pitch position)
-        # r_A = how far A's centers are from the grid line in each axis
-        r_A = np.mod(centersA[0] - origin, pitch)
-
-        # World center of voxel at local index (0,0,0):
-        # global key = localOffset → actual world center = origin + localOffset*pitch + r_A
-        worldOrigin    = origin + localOffset.astype(float) * pitch + r_A
+        worldOrigin    = gridOrigin + localOffset.astype(float) * pitch
         transform      = np.eye(4) * pitch
-        transform[0,3] = worldOrigin[0]
-        transform[1,3] = worldOrigin[1]
-        transform[2,3] = worldOrigin[2]
-        transform[3,3] = 1.0
+        transform[0, 3] = worldOrigin[0]
+        transform[1, 3] = worldOrigin[1]
+        transform[2, 3] = worldOrigin[2]
+        transform[3, 3] = 1.0
 
         resultGrid = trimesh.voxel.VoxelGrid(
             trimesh.voxel.encoding.DenseEncoding(denseMatrix),

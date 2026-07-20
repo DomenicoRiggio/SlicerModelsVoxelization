@@ -7,6 +7,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/logicUtils.py
   ${MODULE_NAME}Lib/UI/HelpDialog.py
   ${MODULE_NAME}Lib/UI/utils.py
+  ${MODULE_NAME}Lib/MSHFileWriter.py
   )
 
 set(MODULE_PYTHON_RESOURCES
