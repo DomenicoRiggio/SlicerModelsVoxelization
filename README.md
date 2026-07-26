@@ -1,6 +1,6 @@
 <div align="center">
   
-# SlicerModelsVoxelization
+# SlicerHexahedronMesher
 <br>
 
 <img src="https://raw.githubusercontent.com/DomenicoRiggio/SlicerModelsVoxelization/refs/heads/develop/Voxelization/Resources/Icons/Voxelization.png?raw=true" alt="drawing" style="width:300px;"/>
